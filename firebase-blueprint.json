@@ -1,0 +1,105 @@
+{
+  "entities": {
+    "PlayerProgress": {
+      "title": "PlayerProgress",
+      "description": "Cloud-saved Pagade campaign progress, unlocked stages, Glory points, and match preferences for an authenticated user.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the account owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Player display name.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "provider": {
+          "type": "string",
+          "description": "Authentication provider identifier.",
+          "enum": ["google", "apple"]
+        },
+        "highestUnlockedLevel": {
+          "type": "integer",
+          "description": "Highest unlocked stage in the endless Pagade campaign."
+        },
+        "totalWins": {
+          "type": "integer",
+          "description": "Total matches won against Shakuni."
+        },
+        "totalCaptures": {
+          "type": "integer",
+          "description": "Total enemy tokens captured."
+        },
+        "gloryPoints": {
+          "type": "integer",
+          "description": "Total accumulated Glory XP."
+        },
+        "selectedDifficulty": {
+          "type": "string",
+          "description": "Preferred Shakuni difficulty rank.",
+          "enum": [
+            "auto",
+            "beginner",
+            "intermediate",
+            "advanced",
+            "semi-pro",
+            "pro",
+            "super-pro",
+            "undisputed"
+          ]
+        },
+        "gameMode": {
+          "type": "string",
+          "description": "Preferred match length mode.",
+          "enum": ["classic", "quick_blitz"]
+        },
+        "autoMoveSingle": {
+          "type": "boolean",
+          "description": "Whether to automatically move when only 1 legal move exists."
+        },
+        "fastSpeed": {
+          "type": "boolean",
+          "description": "Whether 2x fast match animation speed is enabled."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of initial profile creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of most recent progress sync."
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "provider",
+        "highestUnlockedLevel",
+        "totalWins",
+        "totalCaptures",
+        "gloryPoints",
+        "selectedDifficulty",
+        "gameMode",
+        "autoMoveSingle",
+        "fastSpeed",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/players/{userId}": {
+      "schema": {
+        "$ref": "#/entities/PlayerProgress"
+      },
+      "description": "Stores each authenticated player's cloud-synced Pagade campaign progress, keyed by their Firebase Auth UID."
+    }
+  }
+}

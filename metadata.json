@@ -1,0 +1,6 @@
+{
+  "name": "Pagade",
+  "description": "Royal single-player Ludo campaign game against Shakuni with endless progression, unlockable tactical skills, and 7 mastery ranks from Beginner to Undisputed.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
