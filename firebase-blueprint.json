@@ -92,6 +92,36 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "AdminGrant": {
+      "title": "AdminGrant",
+      "description": "Authorized administrator email grant allowing access to the Development & Production GitHub Server Sync Console.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "Lowercase email address granted admin server sync privileges.",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "role": {
+          "type": "string",
+          "description": "Admin role tier.",
+          "enum": ["owner", "admin"]
+        },
+        "addedBy": {
+          "type": "string",
+          "description": "Email of the super-admin who granted access.",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin access was granted."
+        }
+      },
+      "required": ["email", "role", "addedBy", "createdAt"]
     }
   },
   "firestore": {
@@ -100,6 +130,12 @@
         "$ref": "#/entities/PlayerProgress"
       },
       "description": "Stores each authenticated player's cloud-synced Pagade campaign progress, keyed by their Firebase Auth UID."
+    },
+    "/admin_emails/{emailId}": {
+      "schema": {
+        "$ref": "#/entities/AdminGrant"
+      },
+      "description": "Stores delegated admin email grants, keyed by normalized email ID, accessible only to verified admins."
     }
   }
 }

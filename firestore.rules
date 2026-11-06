@@ -7,7 +7,7 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // 2. Hardened Primitives
+    // 2. Hardened Primitives & Admin RBAC
     function isSignedIn() {
       return request.auth != null;
     }
@@ -26,6 +26,16 @@ service cloud.firestore {
 
     function existing() {
       return resource.data;
+    }
+
+    // Bootstrapped Super-Admin (pradyumnad777@gmail.com)
+    function isSuperAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'pradyumnad777@gmail.com';
+    }
+
+    // Delegated Admin check: either Super-Admin or has a document in /admins/{uid}
+    function isAdmin() {
+      return isSuperAdmin() || (isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
     }
 
     // 3. Entity Validation Blueprint for PlayerProgress
@@ -104,9 +114,24 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
-    // 4. Collection Rules: /players/{userId}
+    // 4. Entity Validation Blueprint for AdminGrant (/admin_emails/{emailId})
+    function isValidAdminGrant(data) {
+      return data.keys().hasAll(['email', 'role', 'addedBy', 'createdAt'])
+        && data.keys().hasOnly(['email', 'role', 'addedBy', 'createdAt'])
+        && data.email is string
+        && data.email.size() >= 3
+        && data.email.size() <= 120
+        && data.role is string
+        && data.role in ['owner', 'admin']
+        && data.addedBy is string
+        && data.addedBy.size() >= 3
+        && data.addedBy.size() <= 120
+        && data.createdAt is timestamp;
+    }
+
+    // 5. Collection Rules: /players/{userId}
     match /players/{userId} {
-      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
       allow list: if false;
 
       allow create: if isVerifiedUser()
@@ -118,29 +143,49 @@ service cloud.firestore {
 
       allow update: if isVerifiedUser()
         && isValidId(userId)
-        && request.auth.uid == userId
         && isValidPlayerProgress(incoming())
         && incoming().uid == existing().uid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          // Action: Sync Progress & Preferences
-          incoming().diff(existing()).affectedKeys().hasOnly([
-            'displayName',
-            'provider',
-            'highestUnlockedLevel',
-            'totalWins',
-            'totalCaptures',
-            'gloryPoints',
-            'selectedDifficulty',
-            'gameMode',
-            'autoMoveSingle',
-            'fastSpeed',
-            'updatedAt'
-          ])
+          isAdmin() || (
+            request.auth.uid == userId
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'displayName',
+              'provider',
+              'highestUnlockedLevel',
+              'totalWins',
+              'totalCaptures',
+              'gloryPoints',
+              'selectedDifficulty',
+              'gameMode',
+              'autoMoveSingle',
+              'fastSpeed',
+              'updatedAt'
+            ])
+          )
         );
 
       allow delete: if false;
+    }
+
+    // 6. Collection Rules: /admin_emails/{emailId}
+    match /admin_emails/{emailId} {
+      allow get: if isVerifiedUser() && isValidId(emailId) && (isAdmin() || resource.data.email == request.auth.token.email);
+      allow list: if isAdmin() && resource.data.role in ['owner', 'admin'];
+
+      allow create: if isAdmin()
+        && isValidId(emailId)
+        && isValidAdminGrant(incoming())
+        && incoming().createdAt == request.time;
+
+      allow update: if isAdmin()
+        && isValidId(emailId)
+        && isValidAdminGrant(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['role']);
+
+      allow delete: if isSuperAdmin() && isValidId(emailId);
     }
   }
 }

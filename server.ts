@@ -17,6 +17,16 @@ const PORT = 3000;
 let oauthGithubToken: string | null = null;
 let oauthGithubUsername: string | null = null;
 
+// Primary Owner Super-Admin + Delegated Admin Emails Allowlist
+const OWNER_ADMIN_EMAIL = 'pradyumnad777@gmail.com';
+const authorizedAdminEmails = new Set<string>([OWNER_ADMIN_EMAIL]);
+
+function isEmailAuthorizedAdmin(emailHeader: unknown): boolean {
+  if (typeof emailHeader !== 'string') return false;
+  const clean = emailHeader.trim().toLowerCase();
+  return clean.length > 0 && authorizedAdminEmails.has(clean);
+}
+
 const DEV_SERVER_URL =
   process.env.APP_URL ||
   'https://ais-dev-ibesgp6pbtqa2ru7kdzzyv-399442165368.asia-east1.run.app';
@@ -89,8 +99,70 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '5mb' }));
 
-  // 1. Inspect workspace files & connection status for `pagade` repository
-  app.get('/api/github/status', async (_req, res) => {
+  // 0. Sync or Update Authorized Admin Emails from Verified Client / Super-Admin
+  app.get('/api/admin/list', (req, res) => {
+    const callerEmail = req.headers['x-admin-email'];
+    if (!isEmailAuthorizedAdmin(callerEmail)) {
+      res.status(403).json({ error: 'Restricted to authorized Pagade administrators.' });
+      return;
+    }
+    res.json({
+      ownerEmail: OWNER_ADMIN_EMAIL,
+      adminEmails: Array.from(authorizedAdminEmails),
+    });
+  });
+
+  app.post('/api/admin/grant', (req, res) => {
+    const callerEmail = req.headers['x-admin-email'];
+    if (!isEmailAuthorizedAdmin(callerEmail)) {
+      res.status(403).json({ error: 'Only an existing admin can grant server sync rights.' });
+      return;
+    }
+    const { email, emails }: { email?: string; emails?: string[] } = req.body || {};
+    if (typeof email === 'string' && email.includes('@')) {
+      authorizedAdminEmails.add(email.trim().toLowerCase());
+    }
+    if (Array.isArray(emails)) {
+      emails.forEach((em) => {
+        if (typeof em === 'string' && em.includes('@')) {
+          authorizedAdminEmails.add(em.trim().toLowerCase());
+        }
+      });
+    }
+    res.json({
+      ownerEmail: OWNER_ADMIN_EMAIL,
+      adminEmails: Array.from(authorizedAdminEmails),
+    });
+  });
+
+  app.post('/api/admin/revoke', (req, res) => {
+    const callerEmail = String(req.headers['x-admin-email'] || '').trim().toLowerCase();
+    if (callerEmail !== OWNER_ADMIN_EMAIL) {
+      res.status(403).json({ error: 'Only the primary Owner Super-Admin can revoke admin emails.' });
+      return;
+    }
+    const { email }: { email?: string } = req.body || {};
+    if (typeof email === 'string') {
+      const clean = email.trim().toLowerCase();
+      if (clean !== OWNER_ADMIN_EMAIL) {
+        authorizedAdminEmails.delete(clean);
+      }
+    }
+    res.json({
+      ownerEmail: OWNER_ADMIN_EMAIL,
+      adminEmails: Array.from(authorizedAdminEmails),
+    });
+  });
+
+  // 1. Inspect workspace files & connection status for `pagade` repository (Admin Only)
+  app.get('/api/github/status', async (req, res) => {
+    const callerEmail = req.headers['x-admin-email'];
+    if (!isEmailAuthorizedAdmin(callerEmail)) {
+      res.status(403).json({
+        error: 'Access Denied: Only authorized Pagade admins can view server sync controls.',
+      });
+      return;
+    }
     const files = collectWorkspaceFiles(__dirname);
     const token = getActiveGithubToken();
     const hasOAuthCredentials = Boolean(
@@ -245,8 +317,17 @@ async function startServer() {
   app.get(['/auth/github/callback', '/auth/github/callback/'], githubCallbackHandler);
 
   // 4. Sync / Push workspace code to GitHub `pagade` repository based on explicit Yes/No approval
-  //    for `development` and `production` branches.
+  //    for `development` and `production` branches (Restricted to Authorized Admins).
   app.post('/api/github/sync', async (req, res) => {
+    const callerEmail = req.headers['x-admin-email'];
+    if (!isEmailAuthorizedAdmin(callerEmail)) {
+      res.status(403).json({
+        error:
+          'Access Denied: Only the Owner (pradyumnad777@gmail.com) or an authorized Admin email can sync Development or Production servers.',
+      });
+      return;
+    }
+
     const {
       approveDevelopment,
       approveProduction,

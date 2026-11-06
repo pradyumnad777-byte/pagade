@@ -15,11 +15,20 @@ import {
   ExternalLink,
   RefreshCw,
   FileCode2,
+  UserPlus,
+  Trash2,
+  Lock,
 } from 'lucide-react';
 import { DifficultyTierId } from '../data/pagadeData';
 import { GameMode } from '../utils/pagadeEngine';
 import {
   auth,
+  SUPER_ADMIN_EMAIL,
+  AdminGrantRecord,
+  checkUserIsAdmin,
+  listAuthorizedAdmins,
+  grantAdminEmailAccess,
+  revokeAdminEmailAccess,
   signInWithGooglePopup,
   signInWithApplePopup,
   signOutFirebase,
@@ -91,6 +100,21 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
+  // Admin RBAC State (Strictly restricted to pradyumnad777@gmail.com + delegated admin emails)
+  const signedInEmail = (
+    auth.currentUser?.email ||
+    progress.accountProfile?.email ||
+    ''
+  )
+    .trim()
+    .toLowerCase();
+
+  const isSuperAdmin = signedInEmail === SUPER_ADMIN_EMAIL;
+  const [isAuthorizedAdmin, setIsAuthorizedAdmin] = useState<boolean>(isSuperAdmin);
+  const [adminEmailsList, setAdminEmailsList] = useState<AdminGrantRecord[]>([]);
+  const [newAdminEmailInput, setNewAdminEmailInput] = useState<string>('');
+  const [isManagingAdmin, setIsManagingAdmin] = useState<boolean>(false);
+
   // GitHub `pagade` Repository & 2-Server (Development / Production) Release Pipeline State
   const [githubStatus, setGithubStatus] = useState<GithubStatusResponse | null>(null);
   const [loadingGithub, setLoadingGithub] = useState<boolean>(false);
@@ -111,10 +135,72 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
     }
   });
 
+  // Verify whether current user has Admin Server Sync rights & load delegated admin emails
+  const refreshAdminPermissions = useCallback(async () => {
+    if (!signedInEmail) {
+      setIsAuthorizedAdmin(false);
+      setAdminEmailsList([]);
+      return;
+    }
+    const allowed = await checkUserIsAdmin(signedInEmail);
+    setIsAuthorizedAdmin(allowed);
+
+    if (allowed) {
+      try {
+        const list = await listAuthorizedAdmins();
+        // Ensure owner email is always shown in the list
+        const hasOwner = list.some((a) => a.email === SUPER_ADMIN_EMAIL);
+        const completeList: AdminGrantRecord[] = hasOwner
+          ? list
+          : [
+              {
+                emailId: 'pradyumnad777_gmail_com',
+                email: SUPER_ADMIN_EMAIL,
+                role: 'owner',
+                addedBy: SUPER_ADMIN_EMAIL,
+              },
+              ...list,
+            ];
+        setAdminEmailsList(completeList);
+
+        // Sync authorized admin list with Express backend
+        await fetch('/api/admin/grant', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-email': signedInEmail,
+          },
+          body: JSON.stringify({
+            emails: completeList.map((a) => a.email),
+          }),
+        });
+      } catch {
+        // Fallback to owner entry if Firestore query is still initializing
+        setAdminEmailsList([
+          {
+            emailId: 'pradyumnad777_gmail_com',
+            email: SUPER_ADMIN_EMAIL,
+            role: 'owner',
+            addedBy: SUPER_ADMIN_EMAIL,
+          },
+        ]);
+      }
+    }
+  }, [signedInEmail]);
+
+  useEffect(() => {
+    refreshAdminPermissions();
+  }, [refreshAdminPermissions]);
+
   const fetchGithubStatus = useCallback(async () => {
+    if (!isAuthorizedAdmin || !signedInEmail) return;
     setLoadingGithub(true);
     try {
-      const resp = await fetch('/api/github/status');
+      const resp = await fetch('/api/github/status', {
+        headers: {
+          'x-admin-email': signedInEmail,
+        },
+      });
       if (resp.ok) {
         const data = (await resp.json()) as GithubStatusResponse;
         setGithubStatus(data);
@@ -124,11 +210,13 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
     } finally {
       setLoadingGithub(false);
     }
-  }, []);
+  }, [isAuthorizedAdmin, signedInEmail]);
 
   useEffect(() => {
-    fetchGithubStatus();
-  }, [fetchGithubStatus]);
+    if (isAuthorizedAdmin) {
+      fetchGithubStatus();
+    }
+  }, [isAuthorizedAdmin, fetchGithubStatus]);
 
   // Listen for OAuth popup completion message from `/auth/github/callback`
   useEffect(() => {
@@ -145,6 +233,62 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, [fetchGithubStatus]);
+
+  const handleGrantNewAdminEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAuthorizedAdmin || !signedInEmail) return;
+    const target = newAdminEmailInput.trim().toLowerCase();
+    if (!target || !target.includes('@')) {
+      setGithubNotice('Please enter a valid email address (e.g. teammate@gmail.com).');
+      return;
+    }
+
+    setIsManagingAdmin(true);
+    setGithubNotice(null);
+    try {
+      await grantAdminEmailAccess(target, signedInEmail);
+      await fetch('/api/admin/grant', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-email': signedInEmail,
+        },
+        body: JSON.stringify({ email: target }),
+      });
+      setNewAdminEmailInput('');
+      await refreshAdminPermissions();
+      setGithubNotice(
+        `Granted Admin Server Sync rights to ${target}. When they sign in with that email, they will see the Development & Production Server Sync Console.`
+      );
+    } catch (err) {
+      setGithubNotice(err instanceof Error ? err.message : 'Failed to grant admin email access.');
+    } finally {
+      setIsManagingAdmin(false);
+    }
+  };
+
+  const handleRevokeAdminEmail = async (targetEmail: string) => {
+    if (!isSuperAdmin || targetEmail === SUPER_ADMIN_EMAIL) return;
+    setIsManagingAdmin(true);
+    setGithubNotice(null);
+    try {
+      await revokeAdminEmailAccess(targetEmail);
+      await fetch('/api/admin/revoke', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-email': signedInEmail,
+        },
+        body: JSON.stringify({ email: targetEmail }),
+      });
+      await refreshAdminPermissions();
+      setGithubNotice(`Revoked Admin Server Sync rights from ${targetEmail}.`);
+    } catch (err) {
+      setGithubNotice(err instanceof Error ? err.message : 'Failed to revoke admin access.');
+    } finally {
+      setIsManagingAdmin(false);
+    }
+  };
 
   const handleConnectGithubOAuth = async () => {
     setGithubNotice(null);
@@ -165,6 +309,7 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
   };
 
   const handleExecuteGithubSync = async () => {
+    if (!isAuthorizedAdmin || !signedInEmail) return;
     if (!approveDev && !approveProd) {
       setGithubNotice(
         'Both Development and Production are set to NO. Switch at least one server to YES to approve syncing.'
@@ -177,7 +322,10 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
     try {
       const resp = await fetch('/api/github/sync', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-email': signedInEmail,
+        },
         body: JSON.stringify({
           approveDevelopment: approveDev,
           approveProduction: approveProd,
@@ -282,6 +430,8 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
         ...merged,
         accountProfile: profile,
       });
+      const adminStatus = await checkUserIsAdmin(user.email);
+      setIsAuthorizedAdmin(adminStatus);
       setFeedbackMsg(
         `Signed in with Google (${profile.email})! Cloud progress synced to Firestore (Stage ${merged.highestUnlockedLevel}).`
       );
@@ -318,6 +468,8 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
         ...merged,
         accountProfile: profile,
       });
+      const adminStatus = await checkUserIsAdmin(user.email);
+      setIsAuthorizedAdmin(adminStatus);
       setFeedbackMsg(
         `Signed in with Apple ID (${profile.email})! Cloud progress synced to Firestore.`
       );
@@ -364,6 +516,7 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
     } catch {
       // Ignore
     }
+    setIsAuthorizedAdmin(false);
     onUpdateProgress({
       ...progress,
       accountProfile: null,
@@ -435,13 +588,21 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
         <div>
           <div className="flex items-center gap-2 text-xs text-amber-400 font-medium">
             <ShieldCheck className="w-4 h-4" />
-            <span>GitHub Release Pipeline & Cloud Account Sync</span>
+            <span>
+              {isAuthorizedAdmin
+                ? 'Admin Server Control & Cloud Account Sync'
+                : 'Firebase Cloud Authentication & Cross-Device Restore'}
+            </span>
           </div>
           <h1 className="font-display text-2xl font-bold text-white mt-1">
-            GitHub (`pagade`) & Cloud Control Center
+            {isAuthorizedAdmin
+              ? 'Admin Console & Cloud Sync'
+              : 'Royal Account & Cloud Sync'}
           </h1>
           <p className="text-sm text-slate-300 mt-1 max-w-2xl">
-            Manage your two live servers (Development & Production), approve syncing the latest Pagade code to your GitHub repository with explicit Yes/No gates, and sync player progress via Firebase.
+            {isAuthorizedAdmin
+              ? 'You are signed in with Admin privileges. Manage your Development & Production servers, sync code to GitHub, and grant or revoke admin access for other emails.'
+              : 'Sign in with Google Gmail or Apple ID to automatically back up and restore your unlocked Pagade stages, Pasa skills, and Glory across any device.'}
           </p>
         </div>
 
@@ -451,317 +612,6 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
             Stage {progress.highestUnlockedLevel} · {progress.gloryPoints} Glory
           </p>
         </div>
-      </div>
-
-      {/* SECTION 1: GitHub Repository (`pagade`) & 2-Server (Dev / Prod) Approval Gate */}
-      <div className="rounded-2xl border border-amber-500/30 bg-[#171F2C] p-5 flex flex-col gap-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
-          <div>
-            <div className="flex items-center gap-2 text-xs text-amber-400 font-medium">
-              <GitBranch className="w-4 h-4" />
-              <span>GitHub Repository:</span>
-              <strong className="font-mono-num text-white">
-                {githubStatus?.githubUser ? `${githubStatus.githubUser.login}/pagade` : 'pagade'}
-              </strong>
-              <span aria-hidden="true">·</span>
-              <span className="font-mono-num text-slate-300">
-                {githubStatus?.workspaceFilesCount ?? 20} Tracked Files
-              </span>
-            </div>
-            <h2 className="font-display text-lg font-bold text-white mt-1">
-              Dual-Server GitHub Sync Gate (Development & Production)
-            </h2>
-            <p className="text-xs text-slate-300 mt-0.5">
-              Whenever you build new features, choose <strong>YES</strong> or <strong>NO</strong> below for each environment before syncing to your GitHub <code className="text-amber-300">pagade</code> repository.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            {githubStatus?.connected && githubStatus.githubUser ? (
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-emerald-950/50 border border-emerald-500/40 text-xs text-emerald-300">
-                <CheckCircle2 className="w-4 h-4 shrink-0" />
-                <span>@{githubStatus.githubUser.login}</span>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={handleConnectGithubOAuth}
-                className="min-h-[40px] px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
-              >
-                <GitBranch className="w-3.5 h-3.5 text-amber-400" />
-                <span>Connect GitHub Account</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={fetchGithubStatus}
-              disabled={loadingGithub}
-              aria-label="Refresh GitHub status"
-              className="min-w-[40px] min-h-[40px] rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 flex items-center justify-center cursor-pointer"
-            >
-              <RefreshCw className={`w-4 h-4 ${loadingGithub ? 'animate-spin' : ''}`} />
-            </button>
-          </div>
-        </div>
-
-        {githubNotice && (
-          <div className="rounded-xl border border-amber-500/40 bg-slate-900/95 px-4 py-3 text-xs text-amber-200 flex items-center justify-between gap-3">
-            <span>{githubNotice}</span>
-            <button
-              type="button"
-              onClick={() => setGithubNotice(null)}
-              className="text-amber-400 hover:underline font-medium shrink-0 cursor-pointer"
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
-
-        {/* Two Server Environment Cards with Explicit YES / NO Permission Gates */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Server 1: Development Server */}
-          <div
-            className={`rounded-2xl border p-4 flex flex-col justify-between gap-4 transition-colors ${
-              approveDev
-                ? 'bg-slate-900/90 border-emerald-500/50'
-                : 'bg-slate-900/40 border-slate-800'
-            }`}
-          >
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
-                  <Server className="w-4 h-4" />
-                  <span>SERVER 1 · DEVELOPMENT</span>
-                </div>
-                <span className="font-mono-num text-xs text-slate-400">
-                  Branch: <strong className="text-white">development</strong>
-                </span>
-              </div>
-
-              <p className="text-xs text-slate-300">
-                Active staging & feature testing server. Syncs new features to the <code className="text-emerald-300">development</code> branch of your <code className="text-white">pagade</code> repository.
-              </p>
-
-              <a
-                href={devUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[11px] font-mono-num text-amber-400 hover:underline flex items-center gap-1 truncate mt-1"
-              >
-                <ExternalLink className="w-3 h-3 shrink-0" />
-                <span className="truncate">{devUrl}</span>
-              </a>
-            </div>
-
-            {/* Explicit YES / NO Permission Selector */}
-            <div className="pt-3 border-t border-slate-800 flex items-center justify-between gap-3">
-              <span className="text-xs font-medium text-slate-200">
-                Sync to Development?
-              </span>
-              <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setApproveDev(true)}
-                  className={`min-h-[34px] px-3.5 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                    approveDev
-                      ? 'bg-emerald-500 text-slate-950 shadow-sm'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  YES
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setApproveDev(false)}
-                  className={`min-h-[34px] px-3.5 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                    !approveDev
-                      ? 'bg-rose-600 text-white shadow-sm'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  NO
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Server 2: Production Server */}
-          <div
-            className={`rounded-2xl border p-4 flex flex-col justify-between gap-4 transition-colors ${
-              approveProd
-                ? 'bg-slate-900/90 border-amber-500/60'
-                : 'bg-slate-900/40 border-slate-800'
-            }`}
-          >
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-xs font-semibold text-amber-400">
-                  <Server className="w-4 h-4" />
-                  <span>SERVER 2 · PRODUCTION</span>
-                </div>
-                <span className="font-mono-num text-xs text-slate-400">
-                  Branch: <strong className="text-white">production / main</strong>
-                </span>
-              </div>
-
-              <p className="text-xs text-slate-300">
-                Live player release server. Only pushes to <code className="text-amber-300">production</code> & <code className="text-amber-300">main</code> when you explicitly approve <strong>YES</strong>.
-              </p>
-
-              <a
-                href={prodUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[11px] font-mono-num text-amber-400 hover:underline flex items-center gap-1 truncate mt-1"
-              >
-                <ExternalLink className="w-3 h-3 shrink-0" />
-                <span className="truncate">{prodUrl}</span>
-              </a>
-            </div>
-
-            {/* Explicit YES / NO Permission Selector */}
-            <div className="pt-3 border-t border-slate-800 flex items-center justify-between gap-3">
-              <span className="text-xs font-medium text-slate-200">
-                Promote to Production?
-              </span>
-              <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setApproveProd(true)}
-                  className={`min-h-[34px] px-3.5 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                    approveProd
-                      ? 'bg-amber-500 text-slate-950 shadow-sm'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  YES
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setApproveProd(false)}
-                  className={`min-h-[34px] px-3.5 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                    !approveProd
-                      ? 'bg-rose-600 text-white shadow-sm'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  NO
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Commit Message + Execute Approved Sync Button */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1">
-          <input
-            type="text"
-            value={commitMessage}
-            onChange={(e) => setCommitMessage(e.target.value)}
-            placeholder="Describe the new feature or update being synced..."
-            className="flex-1 h-11 px-3.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-amber-400"
-          />
-
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              disabled={isPushingGithub || (!approveDev && !approveProd)}
-              onClick={handleExecuteGithubSync}
-              className={`min-h-[44px] px-5 py-2.5 rounded-xl font-semibold text-xs flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0 ${
-                approveDev || approveProd
-                  ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 cursor-pointer shadow-lg shadow-amber-500/15'
-                  : 'bg-slate-800 text-slate-500 cursor-not-allowed'
-              }`}
-            >
-              <GitBranch className="w-4 h-4" />
-              <span>
-                {isPushingGithub
-                  ? 'Pushing to GitHub...'
-                  : `Sync Approved (Dev: ${approveDev ? 'YES' : 'NO'} · Prod: ${
-                      approveProd ? 'YES' : 'NO'
-                    })`}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setShowFilesManifest((prev) => !prev)}
-              className="min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
-            >
-              <FileCode2 className="w-4 h-4 text-amber-400" />
-              <span>Files ({githubStatus?.workspaceFilesCount ?? 20})</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleDownloadSourceBundle}
-              title="Download full source bundle JSON"
-              className="min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
-            >
-              <Download className="w-4 h-4 text-emerald-400" />
-              <span className="hidden sm:inline">Bundle</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Optional Expandable File Manifest */}
-        {showFilesManifest && githubStatus && (
-          <div className="rounded-xl bg-slate-950/90 border border-slate-800 p-3.5 flex flex-col gap-2">
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span>Tracked Pagade Repository Files Ready to Sync:</span>
-              <span className="font-mono-num">{githubStatus.workspaceFilesCount} files</span>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-1.5 max-h-40 overflow-y-auto text-[11px] font-mono-num text-slate-300">
-              {githubStatus.workspaceFiles.map((f) => (
-                <div
-                  key={f.relativePath}
-                  className="px-2 py-1 rounded bg-slate-900/80 border border-slate-800/80 flex items-center justify-between gap-2 truncate"
-                >
-                  <span className="truncate">{f.relativePath}</span>
-                  <span className="text-slate-500 shrink-0">
-                    {(f.sizeBytes / 1024).toFixed(1)}KB
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Recent Sync Release Log */}
-        {releaseHistory.length > 0 && (
-          <div className="pt-3 border-t border-slate-800/80 flex flex-col gap-2">
-            <span className="text-xs font-semibold text-slate-300">
-              Recent Approved GitHub Releases (`pagade`)
-            </span>
-            <div className="flex flex-col gap-1.5">
-              {releaseHistory.map((rel) => (
-                <div
-                  key={rel.id}
-                  className="rounded-xl bg-slate-900/70 border border-slate-800 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-xs"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="font-mono-num text-amber-400 font-semibold">
-                      #{rel.commitSha}
-                    </span>
-                    <span className="text-slate-200 truncate">{rel.message}</span>
-                  </div>
-                  <div className="flex items-center gap-2 font-mono-num text-[11px] shrink-0">
-                    <span className={rel.devSynced ? 'text-emerald-400' : 'text-slate-500'}>
-                      Dev: {rel.devSynced ? 'YES' : 'NO'}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <span className={rel.prodSynced ? 'text-amber-400' : 'text-slate-500'}>
-                      Prod: {rel.prodSynced ? 'YES' : 'NO'}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <span className="text-slate-400">{rel.timestamp}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
       {feedbackMsg && (
@@ -777,19 +627,19 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
         </div>
       )}
 
-      {/* SECTION 2: Player Account Cloud Sync (Google Gmail / Apple ID / Passport Code) */}
+      {/* PLAYER ACCOUNT SECTION: Always visible to players so they can log in with Google / Apple */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {/* Left Card: Google Gmail & Apple ID Firebase Cloud Sign-In */}
         <div className="rounded-2xl border border-slate-800 bg-[#171F2C] p-5 flex flex-col justify-between gap-5">
           <div className="flex flex-col gap-4">
             <div className="flex items-center justify-between">
               <h2 className="font-display text-base font-bold text-white">
-                Player Cloud Login (Google & Apple)
+                1. Google Gmail or Apple Cloud Login
               </h2>
               {progress.accountProfile ? (
                 <span className="text-xs text-emerald-400 flex items-center gap-1 font-medium">
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Cloud Connected</span>
+                  <span>{isAuthorizedAdmin ? 'Admin Verified' : 'Cloud Connected'}</span>
                 </span>
               ) : (
                 <span className="text-xs text-slate-400">Local Mode</span>
@@ -809,7 +659,13 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
                       </p>
                       <p className="text-xs text-slate-300 truncate">
                         {progress.accountProfile.email} ·{' '}
-                        {progress.accountProfile.provider === 'google' ? 'Google Gmail' : 'Apple ID'}
+                        {isSuperAdmin
+                          ? 'Primary Owner Admin'
+                          : isAuthorizedAdmin
+                          ? 'Delegated Admin'
+                          : progress.accountProfile.provider === 'google'
+                          ? 'Google Gmail'
+                          : 'Apple ID'}
                       </p>
                       <p className="text-[11px] text-emerald-400 mt-0.5">
                         Firestore Cloud Synced at {progress.accountProfile.lastSyncedAt}
@@ -842,7 +698,7 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
               </div>
             ) : (
               <p className="text-xs text-slate-300 leading-relaxed">
-                Click <strong className="text-white">Sign in with Google Gmail</strong> below to authenticate with your Google account via Firebase Popup Auth. Whenever you log in with the same account on another device, your highest unlocked stage and Glory points will automatically merge and restore.
+                Click <strong className="text-white">Sign in with Google Gmail</strong> below to authenticate with your Google account. Regular players will sync their game stages and Glory; authorized admins (<code className="text-amber-300">pradyumnad777@gmail.com</code> or invited admin emails) will also unlock the Development & Production Server Sync Console.
               </p>
             )}
 
@@ -886,7 +742,7 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
           <div className="flex flex-col gap-3">
             <div className="flex items-center justify-between">
               <h2 className="font-display text-base font-bold text-white">
-                Instant Transfer Code (Any Device)
+                2. Instant Transfer Code (Any Device)
               </h2>
               <span className="text-xs text-amber-400 flex items-center gap-1">
                 <Sparkles className="w-3.5 h-3.5" />
@@ -960,6 +816,384 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* RESTRICTED ADMIN CONSOLE: ONLY RENDERED WHEN SIGNED IN AS OWNER (pradyumnad777@gmail.com) OR DELEGATED ADMIN EMAIL */}
+      {isAuthorizedAdmin && (
+        <div className="rounded-2xl border border-amber-500/40 bg-[#171F2C] p-5 flex flex-col gap-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+            <div>
+              <div className="flex items-center gap-2 text-xs text-amber-400 font-medium">
+                <Lock className="w-3.5 h-3.5" />
+                <span>Private Admin Server Console ({signedInEmail})</span>
+                <span aria-hidden="true">·</span>
+                <strong className="font-mono-num text-white">
+                  {githubStatus?.githubUser
+                    ? `${githubStatus.githubUser.login}/pagade`
+                    : 'pradyumnad777-byte/pagade'}
+                </strong>
+              </div>
+              <h2 className="font-display text-lg font-bold text-white mt-1">
+                Development & Production Server Sync Gate (Admin Only)
+              </h2>
+              <p className="text-xs text-slate-300 mt-0.5">
+                This console is completely hidden from regular players. Choose <strong>YES</strong> or <strong>NO</strong> below to sync new features to your Development and Production branches.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              {githubStatus?.connected && githubStatus.githubUser ? (
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-emerald-950/50 border border-emerald-500/40 text-xs text-emerald-300">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>@{githubStatus.githubUser.login}</span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleConnectGithubOAuth}
+                  className="min-h-[40px] px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  <GitBranch className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Connect GitHub</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={fetchGithubStatus}
+                disabled={loadingGithub}
+                aria-label="Refresh GitHub status"
+                className="min-w-[40px] min-h-[40px] rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 flex items-center justify-center cursor-pointer"
+              >
+                <RefreshCw className={`w-4 h-4 ${loadingGithub ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+          </div>
+
+          {githubNotice && (
+            <div className="rounded-xl border border-amber-500/40 bg-slate-900/95 px-4 py-3 text-xs text-amber-200 flex items-center justify-between gap-3">
+              <span>{githubNotice}</span>
+              <button
+                type="button"
+                onClick={() => setGithubNotice(null)}
+                className="text-amber-400 hover:underline font-medium shrink-0 cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* Two Server Environment Cards with Explicit YES / NO Permission Gates */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Server 1: Development Server */}
+            <div
+              className={`rounded-2xl border p-4 flex flex-col justify-between gap-4 transition-colors ${
+                approveDev
+                  ? 'bg-slate-900/90 border-emerald-500/50'
+                  : 'bg-slate-900/40 border-slate-800'
+              }`}
+            >
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
+                    <Server className="w-4 h-4" />
+                    <span>SERVER 1 · DEVELOPMENT</span>
+                  </div>
+                  <span className="font-mono-num text-xs text-slate-400">
+                    Branch: <strong className="text-white">development</strong>
+                  </span>
+                </div>
+
+                <p className="text-xs text-slate-300">
+                  Private staging & feature testing server. Syncs new features to the <code className="text-emerald-300">development</code> branch of <code className="text-white">pagade</code>.
+                </p>
+
+                <a
+                  href={devUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[11px] font-mono-num text-amber-400 hover:underline flex items-center gap-1 truncate mt-1"
+                >
+                  <ExternalLink className="w-3 h-3 shrink-0" />
+                  <span className="truncate">{devUrl}</span>
+                </a>
+              </div>
+
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-between gap-3">
+                <span className="text-xs font-medium text-slate-200">
+                  Sync to Development?
+                </span>
+                <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setApproveDev(true)}
+                    className={`min-h-[34px] px-3.5 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                      approveDev
+                        ? 'bg-emerald-500 text-slate-950 shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    YES
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setApproveDev(false)}
+                    className={`min-h-[34px] px-3.5 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                      !approveDev
+                        ? 'bg-rose-600 text-white shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    NO
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Server 2: Production Server */}
+            <div
+              className={`rounded-2xl border p-4 flex flex-col justify-between gap-4 transition-colors ${
+                approveProd
+                  ? 'bg-slate-900/90 border-amber-500/60'
+                  : 'bg-slate-900/40 border-slate-800'
+              }`}
+            >
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-amber-400">
+                    <Server className="w-4 h-4" />
+                    <span>SERVER 2 · PRODUCTION</span>
+                  </div>
+                  <span className="font-mono-num text-xs text-slate-400">
+                    Branch: <strong className="text-white">production / main</strong>
+                  </span>
+                </div>
+
+                <p className="text-xs text-slate-300">
+                  Live release server. Only pushes to <code className="text-amber-300">production</code> & <code className="text-amber-300">main</code> when an authorized admin approves <strong>YES</strong>.
+                </p>
+
+                <a
+                  href={prodUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[11px] font-mono-num text-amber-400 hover:underline flex items-center gap-1 truncate mt-1"
+                >
+                  <ExternalLink className="w-3 h-3 shrink-0" />
+                  <span className="truncate">{prodUrl}</span>
+                </a>
+              </div>
+
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-between gap-3">
+                <span className="text-xs font-medium text-slate-200">
+                  Promote to Production?
+                </span>
+                <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setApproveProd(true)}
+                    className={`min-h-[34px] px-3.5 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                      approveProd
+                        ? 'bg-amber-500 text-slate-950 shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    YES
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setApproveProd(false)}
+                    className={`min-h-[34px] px-3.5 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                      !approveProd
+                        ? 'bg-rose-600 text-white shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    NO
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Commit Message + Execute Approved Sync Button */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1">
+            <input
+              type="text"
+              value={commitMessage}
+              onChange={(e) => setCommitMessage(e.target.value)}
+              placeholder="Describe the new feature or update being synced..."
+              className="flex-1 h-11 px-3.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-amber-400"
+            />
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                disabled={isPushingGithub || (!approveDev && !approveProd)}
+                onClick={handleExecuteGithubSync}
+                className={`min-h-[44px] px-5 py-2.5 rounded-xl font-semibold text-xs flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0 ${
+                  approveDev || approveProd
+                    ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 cursor-pointer shadow-lg shadow-amber-500/15'
+                    : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                }`}
+              >
+                <GitBranch className="w-4 h-4" />
+                <span>
+                  {isPushingGithub
+                    ? 'Pushing to GitHub...'
+                    : `Sync Approved (Dev: ${approveDev ? 'YES' : 'NO'} · Prod: ${
+                        approveProd ? 'YES' : 'NO'
+                      })`}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowFilesManifest((prev) => !prev)}
+                className="min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <FileCode2 className="w-4 h-4 text-amber-400" />
+                <span>Files ({githubStatus?.workspaceFilesCount ?? 31})</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleDownloadSourceBundle}
+                title="Download full source bundle JSON"
+                className="min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <Download className="w-4 h-4 text-emerald-400" />
+                <span className="hidden sm:inline">Bundle</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Admin Access Control Manager: Grant / Revoke Admin Emails */}
+          <div className="pt-4 border-t border-slate-800 flex flex-col gap-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
+                  <UserPlus className="w-4 h-4 text-amber-400" />
+                  <span>Manage Admin Access Rights (Who Can See & Sync Servers)</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Add another email address below to grant them access to this Development & Production Server Sync Console when they sign in.
+                </p>
+              </div>
+            </div>
+
+            <form
+              onSubmit={handleGrantNewAdminEmail}
+              className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5"
+            >
+              <input
+                type="email"
+                value={newAdminEmailInput}
+                onChange={(e) => setNewAdminEmailInput(e.target.value)}
+                placeholder="Enter email to grant Admin Server Sync rights (e.g. partner@gmail.com)"
+                className="flex-1 h-11 px-3.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-amber-400"
+              />
+              <button
+                type="submit"
+                disabled={isManagingAdmin}
+                className="min-h-[44px] px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <UserPlus className="w-4 h-4" />
+                <span>{isManagingAdmin ? 'Saving...' : 'Grant Admin Rights'}</span>
+              </button>
+            </form>
+
+            {/* List of Authorized Admin Emails */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
+              {adminEmailsList.map((adm) => {
+                const isPrimaryOwner = adm.email === SUPER_ADMIN_EMAIL;
+                return (
+                  <div
+                    key={adm.email}
+                    className="rounded-xl bg-slate-900/90 border border-slate-800 px-3.5 py-2.5 flex items-center justify-between gap-2 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-semibold text-white truncate">{adm.email}</p>
+                      <p className="text-[11px] text-slate-400">
+                        {isPrimaryOwner ? 'Primary Owner (Super-Admin)' : `Delegated Admin · Added by ${adm.addedBy}`}
+                      </p>
+                    </div>
+                    {!isPrimaryOwner && isSuperAdmin && (
+                      <button
+                        type="button"
+                        disabled={isManagingAdmin}
+                        onClick={() => handleRevokeAdminEmail(adm.email)}
+                        title="Revoke Admin Access"
+                        className="min-h-[34px] px-2.5 py-1 rounded-lg bg-rose-950/60 hover:bg-rose-900/80 border border-rose-500/40 text-rose-300 text-xs flex items-center gap-1 cursor-pointer shrink-0"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Revoke</span>
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Optional Expandable File Manifest */}
+          {showFilesManifest && githubStatus && (
+            <div className="rounded-xl bg-slate-950/90 border border-slate-800 p-3.5 flex flex-col gap-2">
+              <div className="flex items-center justify-between text-xs text-slate-400">
+                <span>Tracked Pagade Repository Files Ready to Sync:</span>
+                <span className="font-mono-num">{githubStatus.workspaceFilesCount} files</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-1.5 max-h-40 overflow-y-auto text-[11px] font-mono-num text-slate-300">
+                {githubStatus.workspaceFiles.map((f) => (
+                  <div
+                    key={f.relativePath}
+                    className="px-2 py-1 rounded bg-slate-900/80 border border-slate-800/80 flex items-center justify-between gap-2 truncate"
+                  >
+                    <span className="truncate">{f.relativePath}</span>
+                    <span className="text-slate-500 shrink-0">
+                      {(f.sizeBytes / 1024).toFixed(1)}KB
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Recent Sync Release Log */}
+          {releaseHistory.length > 0 && (
+            <div className="pt-3 border-t border-slate-800/80 flex flex-col gap-2">
+              <span className="text-xs font-semibold text-slate-300">
+                Recent Approved GitHub Releases (`pagade`)
+              </span>
+              <div className="flex flex-col gap-1.5">
+                {releaseHistory.map((rel) => (
+                  <div
+                    key={rel.id}
+                    className="rounded-xl bg-slate-900/70 border border-slate-800 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-xs"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="font-mono-num text-amber-400 font-semibold">
+                        #{rel.commitSha}
+                      </span>
+                      <span className="text-slate-200 truncate">{rel.message}</span>
+                    </div>
+                    <div className="flex items-center gap-2 font-mono-num text-[11px] shrink-0">
+                      <span className={rel.devSynced ? 'text-emerald-400' : 'text-slate-500'}>
+                        Dev: {rel.devSynced ? 'YES' : 'NO'}
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span className={rel.prodSynced ? 'text-amber-400' : 'text-slate-500'}>
+                        Prod: {rel.prodSynced ? 'YES' : 'NO'}
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span className="text-slate-400">{rel.timestamp}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
