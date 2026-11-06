@@ -496,7 +496,11 @@ async function startServer() {
   // Mount Vite middleware in development or static dist in production
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        watch: null,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
