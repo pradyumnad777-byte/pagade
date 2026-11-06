@@ -598,6 +598,7 @@ async function startServer() {
     playerId: string;
     playerName: string;
     playerTag: string;
+    playerAvatar?: string;
     seat: SeatIdx;
     isHost: boolean;
     dryStreak: number;
@@ -784,11 +785,13 @@ async function startServer() {
       playerId,
       playerName,
       playerTag,
+      playerAvatar,
       gameMode,
     }: {
       playerId?: string;
       playerName?: string;
       playerTag?: string;
+      playerAvatar?: string;
       gameMode?: 'classic' | 'quick_blitz';
     } = req.body || {};
 
@@ -801,6 +804,7 @@ async function startServer() {
       playerId: cleanId,
       playerName: cleanName,
       playerTag: cleanTag,
+      playerAvatar: typeof playerAvatar === 'string' ? playerAvatar : undefined,
       seat: 0,
       isHost: true,
       dryStreak: 0,
@@ -837,11 +841,13 @@ async function startServer() {
       playerId,
       playerName,
       playerTag,
+      playerAvatar,
     }: {
       code?: string;
       playerId?: string;
       playerName?: string;
       playerTag?: string;
+      playerAvatar?: string;
     } = req.body || {};
 
     const cleanCode = (code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -860,6 +866,9 @@ async function startServer() {
     if (existing) {
       existing.playerName = cleanName;
       existing.playerTag = cleanTag;
+      if (typeof playerAvatar === 'string' && playerAvatar.length > 0) {
+        existing.playerAvatar = playerAvatar;
+      }
       room.updatedAt = Date.now();
       res.json({ room });
       return;
@@ -890,6 +899,7 @@ async function startServer() {
       playerId: cleanId,
       playerName: cleanName,
       playerTag: cleanTag,
+      playerAvatar: typeof playerAvatar === 'string' ? playerAvatar : undefined,
       seat: assignedSeat,
       isHost: false,
       dryStreak: 0,
@@ -906,18 +916,20 @@ async function startServer() {
     res.json({ room });
   });
 
-  // Update Player Name & Custom ID inside an active or waiting room
+  // Update Player Name, Custom ID & Profile Picture inside an active or waiting room
   app.post('/api/multiplayer/update-profile', (req, res) => {
     const {
       code,
       playerId,
       playerName,
       playerTag,
+      playerAvatar,
     }: {
       code?: string;
       playerId?: string;
       playerName?: string;
       playerTag?: string;
+      playerAvatar?: string;
     } = req.body || {};
 
     const cleanCode = (code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -934,6 +946,9 @@ async function startServer() {
       }
       if (playerTag && playerTag.trim()) {
         player.playerTag = playerTag.trim().slice(0, 16);
+      }
+      if (typeof playerAvatar === 'string' && playerAvatar.length > 0) {
+        player.playerAvatar = playerAvatar;
       }
       room.updatedAt = Date.now();
     }

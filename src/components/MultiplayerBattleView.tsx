@@ -12,6 +12,8 @@ import {
   Edit3,
   Sparkles,
   RotateCcw,
+  Shuffle,
+  ImagePlus,
 } from 'lucide-react';
 import {
   MAIN_TRACK_COORDS,
@@ -19,6 +21,11 @@ import {
   SAFE_GLOBAL_INDICES,
   SeatIndex,
 } from '../data/pagadeData';
+import {
+  ANIMATED_AVATAR_PRESETS,
+  DEFAULT_ROYAL_PORTRAIT,
+  compressImageFileToDataUrl,
+} from '../data/avatars';
 import { GameMode } from '../utils/pagadeEngine';
 import { sound } from '../utils/sound';
 import { IvoryDice } from './IvoryDice';
@@ -27,6 +34,7 @@ interface MpPlayer {
   playerId: string;
   playerName: string;
   playerTag: string;
+  playerAvatar?: string;
   seat: SeatIndex;
   isHost: boolean;
   dryStreak: number;
@@ -73,8 +81,11 @@ interface MpRoom {
 interface MultiplayerBattleViewProps {
   customPlayerName: string;
   customPlayerTag: string;
+  playerAvatar: string;
+  customPlayerAvatar?: string | null;
   gameMode: GameMode;
   onUpdateIdentity: (newName: string, newTag: string) => void;
+  onUpdateAvatar: (newAvatar: string | null) => void;
   isLandscapeCompact?: boolean;
 }
 
@@ -107,8 +118,11 @@ function getMpTokenBoardCoord(token: MpToken): [number, number] {
 export const MultiplayerBattleView: React.FC<MultiplayerBattleViewProps> = ({
   customPlayerName,
   customPlayerTag,
+  playerAvatar,
+  customPlayerAvatar,
   gameMode,
   onUpdateIdentity,
+  onUpdateAvatar,
   isLandscapeCompact = false,
 }) => {
   const [deviceId] = useState<string>(() => getOrCreateDeviceId());
@@ -174,6 +188,7 @@ export const MultiplayerBattleView: React.FC<MultiplayerBattleViewProps> = ({
             playerId: deviceId,
             playerName: cleanName,
             playerTag: cleanTag,
+            playerAvatar,
           }),
         });
         if (resp.ok) {
@@ -183,6 +198,53 @@ export const MultiplayerBattleView: React.FC<MultiplayerBattleViewProps> = ({
       } catch {
         // Ignore
       }
+    }
+  };
+
+  const syncAvatarToRoom = async (nextAvatarUrl: string) => {
+    if (!room?.code) return;
+    try {
+      const resp = await fetch('/api/multiplayer/update-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code: room.code,
+          playerId: deviceId,
+          playerName: customPlayerName,
+          playerTag: customPlayerTag,
+          playerAvatar: nextAvatarUrl,
+        }),
+      });
+      if (resp.ok) {
+        const data = (await resp.json()) as { room: MpRoom };
+        setRoom(data.room);
+      }
+    } catch {
+      // Ignore
+    }
+  };
+
+  const handleRandomAnimatedAvatar = async () => {
+    const others = ANIMATED_AVATAR_PRESETS.filter((p) => p.dataUrl !== customPlayerAvatar);
+    const pool = others.length > 0 ? others : ANIMATED_AVATAR_PRESETS;
+    const chosen = pool[Math.floor(Math.random() * pool.length)];
+    onUpdateAvatar(chosen.dataUrl);
+    sound.play('click');
+    await syncAvatarToRoom(chosen.dataUrl);
+  };
+
+  const handleLocalFileAvatar = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await compressImageFileToDataUrl(file);
+      onUpdateAvatar(dataUrl);
+      sound.play('click');
+      await syncAvatarToRoom(dataUrl);
+    } catch {
+      // Ignore
+    } finally {
+      e.target.value = '';
     }
   };
 
@@ -198,6 +260,7 @@ export const MultiplayerBattleView: React.FC<MultiplayerBattleViewProps> = ({
           playerId: deviceId,
           playerName: customPlayerName,
           playerTag: customPlayerTag,
+          playerAvatar,
           gameMode: selectedMode,
         }),
       });
@@ -233,6 +296,7 @@ export const MultiplayerBattleView: React.FC<MultiplayerBattleViewProps> = ({
           playerId: deviceId,
           playerName: customPlayerName,
           playerTag: customPlayerTag,
+          playerAvatar,
         }),
       });
       const data = await resp.json();
@@ -700,13 +764,16 @@ export const MultiplayerBattleView: React.FC<MultiplayerBattleViewProps> = ({
 
   return (
     <div className="w-full max-w-6xl mx-auto px-3 sm:px-6 pt-4 pb-24 flex flex-col gap-5">
-      {/* Top Player Identity & Custom ID Naming Bar */}
+      {/* Top Player Identity, Profile Picture & Custom ID Naming Bar */}
       <div className="rounded-2xl border border-amber-500/35 bg-[#171F2C] p-4 flex flex-col gap-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-xl bg-amber-500/20 border border-amber-400/50 flex items-center justify-center text-amber-300 font-display font-bold text-base shrink-0">
-              ID
-            </div>
+            <img
+              src={playerAvatar}
+              alt={customPlayerName}
+              referrerPolicy="no-referrer"
+              className="w-12 h-12 rounded-xl object-cover border-2 border-amber-400 shadow-md shrink-0 bg-slate-900"
+            />
             <div>
               <div className="flex items-center gap-2">
                 <span className="text-sm font-bold text-white">{customPlayerName}</span>
@@ -720,14 +787,36 @@ export const MultiplayerBattleView: React.FC<MultiplayerBattleViewProps> = ({
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setIsEditingIdentity((prev) => !prev)}
-            className="min-h-[40px] px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-amber-300 flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
-          >
-            <Edit3 className="w-3.5 h-3.5" />
-            <span>{isEditingIdentity ? 'Close ID Editor' : 'Edit Player Name / ID'}</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleRandomAnimatedAvatar}
+              className="min-h-[38px] px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/50 text-xs font-semibold text-amber-300 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <Shuffle className="w-3.5 h-3.5" />
+              <span>Random Animated</span>
+            </button>
+
+            <label className="min-h-[38px] px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/50 text-xs font-semibold text-emerald-300 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0">
+              <ImagePlus className="w-3.5 h-3.5" />
+              <span>Import Photo</span>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleLocalFileAvatar}
+                className="hidden"
+              />
+            </label>
+
+            <button
+              type="button"
+              onClick={() => setIsEditingIdentity((prev) => !prev)}
+              className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-white flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <Edit3 className="w-3.5 h-3.5 text-amber-400" />
+              <span>{isEditingIdentity ? 'Close Editor' : 'Edit Name / ID'}</span>
+            </button>
+          </div>
         </div>
 
         {isEditingIdentity && (
@@ -1108,9 +1197,18 @@ export const MultiplayerBattleView: React.FC<MultiplayerBattleViewProps> = ({
                       }`}
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
-                        <span
-                          className={`w-3.5 h-3.5 rounded-full shrink-0 ${seatCfg.bgClass}`}
-                        />
+                        {occupant ? (
+                          <img
+                            src={occupant.playerAvatar || DEFAULT_ROYAL_PORTRAIT}
+                            alt={occupant.playerName}
+                            referrerPolicy="no-referrer"
+                            className="w-8 h-8 rounded-lg object-cover border border-amber-400/50 shrink-0 bg-slate-950"
+                          />
+                        ) : (
+                          <span
+                            className={`w-3.5 h-3.5 rounded-full shrink-0 ${seatCfg.bgClass}`}
+                          />
+                        )}
                         <div className="min-w-0">
                           <p className="text-xs font-bold text-white truncate">
                             {occupant ? occupant.playerName : `Seat ${seatCfg.seat + 1} · Open`}

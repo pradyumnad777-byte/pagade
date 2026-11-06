@@ -18,8 +18,16 @@ import {
   UserPlus,
   Trash2,
   Lock,
+  Shuffle,
+  ImagePlus,
 } from 'lucide-react';
 import { DifficultyTierId } from '../data/pagadeData';
+import {
+  ANIMATED_AVATAR_PRESETS,
+  AnimatedAvatarPreset,
+  compressImageFileToDataUrl,
+  resolvePlayerAvatar,
+} from '../data/avatars';
 import { GameMode } from '../utils/pagadeEngine';
 import {
   auth,
@@ -40,6 +48,7 @@ export interface AccountProfile {
   provider: 'google' | 'apple';
   email: string;
   displayName: string;
+  photoUrl?: string | null;
   lastSyncedAt: string;
   isCloudSynced?: boolean;
 }
@@ -47,6 +56,7 @@ export interface AccountProfile {
 export interface SyncableProgress {
   customPlayerName: string;
   customPlayerTag: string;
+  customPlayerAvatar?: string | null;
   highestUnlockedLevel: number;
   totalWins: number;
   totalCaptures: number;
@@ -136,6 +146,63 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
         : null,
     });
     setFeedbackMsg(`Saved your Player Name ("${cleanName}") and Custom ID ("${cleanTag}")!`);
+  };
+
+  const activeAvatarUrl = resolvePlayerAvatar(
+    progress.customPlayerAvatar,
+    progress.accountProfile?.photoUrl || auth.currentUser?.photoURL || null
+  );
+
+  const handlePickRandomAnimatedAvatar = () => {
+    const others = ANIMATED_AVATAR_PRESETS.filter(
+      (p) => p.dataUrl !== progress.customPlayerAvatar
+    );
+    const pool = others.length > 0 ? others : ANIMATED_AVATAR_PRESETS;
+    const chosen = pool[Math.floor(Math.random() * pool.length)];
+    onUpdateProgress({
+      ...progress,
+      customPlayerAvatar: chosen.dataUrl,
+    });
+    setFeedbackMsg(`Selected animated profile picture: "${chosen.name}"!`);
+  };
+
+  const handleSelectAnimatedAvatar = (preset: AnimatedAvatarPreset) => {
+    onUpdateProgress({
+      ...progress,
+      customPlayerAvatar: preset.dataUrl,
+    });
+    setFeedbackMsg(`Selected animated profile picture: "${preset.name}"!`);
+  };
+
+  const handleLocalPhotoImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await compressImageFileToDataUrl(file);
+      onUpdateProgress({
+        ...progress,
+        customPlayerAvatar: dataUrl,
+      });
+      setFeedbackMsg('Imported your custom local photo as your Pagade profile picture!');
+    } catch (err) {
+      setFeedbackMsg(
+        err instanceof Error ? err.message : 'Could not import local photo.'
+      );
+    } finally {
+      e.target.value = '';
+    }
+  };
+
+  const handleUseDefaultAuthPhoto = () => {
+    onUpdateProgress({
+      ...progress,
+      customPlayerAvatar: null,
+    });
+    setFeedbackMsg(
+      progress.accountProfile?.photoUrl || auth.currentUser?.photoURL
+        ? 'Restored your default Google / Apple account profile picture!'
+        : 'Restored default Royal Challenger portrait!'
+    );
   };
 
   // Admin RBAC State (Strictly restricted to pradyumnad777@gmail.com + delegated admin emails)
@@ -460,6 +527,7 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
         provider: 'google',
         email: user.email || 'Google Account',
         displayName: user.displayName || 'Royal Challenger',
+        photoUrl: user.photoURL || null,
         lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         isCloudSynced: true,
       };
@@ -471,7 +539,7 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
       const adminStatus = await checkUserIsAdmin(user.email);
       setIsAuthorizedAdmin(adminStatus);
       setFeedbackMsg(
-        `Signed in with Google (${profile.email})! Cloud progress synced to Firestore (Stage ${merged.highestUnlockedLevel}).`
+        `Signed in with Google (${profile.email})! Default profile picture and cloud progress synced.`
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -498,6 +566,7 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
         provider: 'apple',
         email: user.email || 'Apple ID',
         displayName: user.displayName || 'Apple Challenger',
+        photoUrl: user.photoURL || null,
         lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         isCloudSynced: true,
       };
@@ -509,7 +578,7 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
       const adminStatus = await checkUserIsAdmin(user.email);
       setIsAuthorizedAdmin(adminStatus);
       setFeedbackMsg(
-        `Signed in with Apple ID (${profile.email})! Cloud progress synced to Firestore.`
+        `Signed in with Apple ID (${profile.email})! Default profile picture and cloud progress synced.`
       );
     } catch {
       setAppleSetupNotice(true);
@@ -665,26 +734,110 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
         </div>
       )}
 
-      {/* CUSTOM PLAYER ID & NAMING CARD */}
-      <form
-        onSubmit={handleSaveIdentity}
-        className="rounded-2xl border border-amber-500/35 bg-[#171F2C] p-5 flex flex-col gap-3.5"
-      >
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div>
-            <h2 className="font-display text-base font-bold text-white">
-              Custom Player Name & Gamer ID
-            </h2>
-            <p className="text-xs text-slate-300 mt-0.5">
-              Customize your in-game Display Name and Player ID Tag for both Single-Player Saga and 4-Player Multiplayer Battles.
-            </p>
+      {/* CUSTOM PLAYER PROFILE PICTURE, NAME & GAMER ID CARD */}
+      <div className="rounded-2xl border border-amber-500/35 bg-[#171F2C] p-5 flex flex-col gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3.5">
+            <img
+              src={activeAvatarUrl}
+              alt={progress.customPlayerName}
+              referrerPolicy="no-referrer"
+              className="w-16 h-16 rounded-2xl object-cover border-2 border-amber-400 shadow-lg shrink-0 bg-slate-900"
+            />
+            <div>
+              <h2 className="font-display text-base font-bold text-white">
+                Profile Picture, Player Name & Gamer ID
+              </h2>
+              <p className="text-xs text-slate-300 mt-0.5">
+                By default, your signed-in Google Gmail or Apple ID photo is used. You can also pick a random animated picture or import a photo from your device.
+              </p>
+              <span className="inline-block font-mono-num text-xs text-amber-400 mt-1">
+                Active ID: <strong className="text-white">{progress.customPlayerName}</strong> ({progress.customPlayerTag})
+              </span>
+            </div>
           </div>
-          <span className="font-mono-num text-xs text-amber-400">
-            Active ID: <strong className="text-white">{progress.customPlayerName}</strong> ({progress.customPlayerTag})
-          </span>
+
+          {/* 3 Avatar Selection Action Buttons */}
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handlePickRandomAnimatedAvatar}
+              className="min-h-[40px] px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/50 text-amber-300 font-semibold text-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <Shuffle className="w-3.5 h-3.5" />
+              <span>Random Animated</span>
+            </button>
+
+            <label className="min-h-[40px] px-3.5 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/50 text-emerald-300 font-semibold text-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0">
+              <ImagePlus className="w-3.5 h-3.5" />
+              <span>Import Photo</span>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleLocalPhotoImport}
+                className="hidden"
+              />
+            </label>
+
+            {progress.customPlayerAvatar && (
+              <button
+                type="button"
+                onClick={handleUseDefaultAuthPhoto}
+                className="min-h-[40px] px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-medium cursor-pointer whitespace-nowrap shrink-0"
+              >
+                Use Mail / Apple Photo
+              </button>
+            )}
+          </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+        {/* Clickable Animated Profile Pictures Gallery */}
+        <div className="pt-3 border-t border-slate-800/80 flex flex-col gap-2">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-slate-300 font-medium">
+              Animated Royal Profile Pictures (Tap to select or click Random Animated):
+            </span>
+            <span className="text-slate-400 font-mono-num">
+              {progress.customPlayerAvatar
+                ? 'Custom / Animated Active'
+                : progress.accountProfile?.photoUrl
+                ? 'Google / Apple Photo Active'
+                : 'Default Portrait Active'}
+            </span>
+          </div>
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2.5">
+            {ANIMATED_AVATAR_PRESETS.map((preset) => {
+              const isSelected = progress.customPlayerAvatar === preset.dataUrl;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => handleSelectAnimatedAvatar(preset)}
+                  className={`p-2 rounded-xl border flex flex-col items-center gap-1.5 transition-all cursor-pointer ${
+                    isSelected
+                      ? 'bg-amber-500/20 border-amber-400 ring-2 ring-amber-400/40'
+                      : 'bg-slate-900/80 hover:bg-slate-900 border-slate-800'
+                  }`}
+                >
+                  <img
+                    src={preset.dataUrl}
+                    alt={preset.name}
+                    className="w-12 h-12 rounded-xl object-cover border border-amber-500/30"
+                  />
+                  <span className="text-[11px] font-semibold text-white truncate w-full text-center">
+                    {preset.name}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Name & Custom ID Form */}
+        <form
+          onSubmit={handleSaveIdentity}
+          className="pt-3 border-t border-slate-800/80 grid grid-cols-1 sm:grid-cols-12 gap-3 items-end"
+        >
           <div className="sm:col-span-6 flex flex-col gap-1">
             <label className="text-xs text-slate-300 font-medium">
               Your Display Name
@@ -721,8 +874,8 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
               <span>Save ID</span>
             </button>
           </div>
-        </div>
-      </form>
+        </form>
+      </div>
 
       {/* PLAYER ACCOUNT SECTION: Always visible to players so they can log in with Google / Apple */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -747,12 +900,15 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
               <div className="rounded-xl border border-amber-500/30 bg-slate-900/90 p-4 flex flex-col gap-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-11 h-11 rounded-xl bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-300 font-bold text-sm shrink-0">
-                      {progress.accountProfile.provider === 'google' ? 'G' : ''}
-                    </div>
+                    <img
+                      src={activeAvatarUrl}
+                      alt={progress.accountProfile.displayName}
+                      referrerPolicy="no-referrer"
+                      className="w-12 h-12 rounded-xl object-cover border border-amber-400/50 shrink-0 bg-slate-950"
+                    />
                     <div className="min-w-0">
                       <p className="text-sm font-bold text-white truncate">
-                        {progress.accountProfile.displayName}
+                        {progress.customPlayerName || progress.accountProfile.displayName}
                       </p>
                       <p className="text-xs text-slate-300 truncate">
                         {progress.accountProfile.email} ·{' '}

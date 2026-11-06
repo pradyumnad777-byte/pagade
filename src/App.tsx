@@ -23,6 +23,8 @@ import {
   BarChart3,
   Users,
   Edit3,
+  Shuffle,
+  ImagePlus,
 } from 'lucide-react';
 import {
   DIFFICULTY_TIERS,
@@ -31,6 +33,11 @@ import {
   SkillId,
   getLevelNodeInfo,
 } from './data/pagadeData';
+import {
+  ANIMATED_AVATAR_PRESETS,
+  compressImageFileToDataUrl,
+  resolvePlayerAvatar,
+} from './data/avatars';
 import {
   GameMode,
   MoveCandidate,
@@ -84,6 +91,7 @@ export default function App() {
             parsed.accountProfile?.displayName ||
             'Royal Challenger',
           customPlayerTag: parsed.customPlayerTag || defaultTag,
+          customPlayerAvatar: parsed.customPlayerAvatar || null,
           highestUnlockedLevel: Math.max(1, Number(parsed.highestUnlockedLevel) || 1),
           totalWins: Number(parsed.totalWins) || 0,
           totalCaptures: Number(parsed.totalCaptures) || 0,
@@ -101,6 +109,7 @@ export default function App() {
     return {
       customPlayerName: 'Royal Challenger',
       customPlayerTag: defaultTag,
+      customPlayerAvatar: null,
       highestUnlockedLevel: 1,
       totalWins: 0,
       totalCaptures: 0,
@@ -140,6 +149,18 @@ export default function App() {
     }));
   }, []);
 
+  const handleUpdatePlayerAvatar = useCallback((newAvatar: string | null) => {
+    setProgress((prev) => ({
+      ...prev,
+      customPlayerAvatar: newAvatar,
+    }));
+  }, []);
+
+  const activePlayerAvatar = resolvePlayerAvatar(
+    progress.customPlayerAvatar,
+    progress.accountProfile?.photoUrl || auth.currentUser?.photoURL || null
+  );
+
   // Listen for Firebase Auth state and automatically restore/merge cloud progress
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -168,6 +189,7 @@ export default function App() {
               prev.customPlayerName && prev.customPlayerName !== 'Royal Challenger'
                 ? prev.customPlayerName
                 : user.displayName || 'Royal Challenger',
+            photoUrl: user.photoURL || prev.accountProfile?.photoUrl || null,
             lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             isCloudSynced: true,
           },
@@ -197,6 +219,7 @@ export default function App() {
   }, [
     progress.customPlayerName,
     progress.customPlayerTag,
+    progress.customPlayerAvatar,
     progress.highestUnlockedLevel,
     progress.totalWins,
     progress.totalCaptures,
@@ -898,8 +921,11 @@ export default function App() {
           <MultiplayerBattleView
             customPlayerName={progress.customPlayerName}
             customPlayerTag={progress.customPlayerTag}
+            playerAvatar={activePlayerAvatar}
+            customPlayerAvatar={progress.customPlayerAvatar}
             gameMode={progress.gameMode}
             onUpdateIdentity={handleUpdatePlayerIdentity}
+            onUpdateAvatar={handleUpdatePlayerAvatar}
             isLandscapeCompact={isMobileLandscape}
           />
         )}
@@ -1051,10 +1077,10 @@ export default function App() {
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2.5 min-w-0">
                     <img
-                      src={PLAYER_AVATAR}
-                      alt="Royal Challenger"
+                      src={activePlayerAvatar}
+                      alt={progress.customPlayerName}
                       referrerPolicy="no-referrer"
-                      className={`w-11 h-11 rounded-xl object-cover border-2 shrink-0 ${
+                      className={`w-11 h-11 rounded-xl object-cover border-2 shrink-0 bg-slate-900 ${
                         turn === 'player'
                           ? 'border-amber-400 ring-2 ring-amber-400/30'
                           : 'border-slate-700'
@@ -1099,7 +1125,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setIsEditingHudId((prev) => !prev)}
-                      title="Edit Player Name & ID"
+                      title="Edit Player Name, Photo & ID"
                       className="min-h-[36px] px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[11px] font-medium text-amber-300 flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
                     >
                       <Edit3 className="w-3 h-3" />
@@ -1121,48 +1147,110 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Inline Player Name / Custom ID Editor */}
+                {/* Inline Player Name / Custom ID & Profile Picture Editor */}
                 {isEditingHudId && (
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      handleUpdatePlayerIdentity(hudNameDraft, hudTagDraft);
-                      setIsEditingHudId(false);
-                      sound.play('click');
-                    }}
-                    className="p-2.5 rounded-xl bg-slate-950 border border-amber-500/40 grid grid-cols-1 sm:grid-cols-12 gap-2 items-end"
-                  >
-                    <div className="sm:col-span-5 flex flex-col gap-1">
-                      <label className="text-[11px] text-slate-300">Player Name</label>
-                      <input
-                        type="text"
-                        value={hudNameDraft}
-                        onChange={(e) => setHudNameDraft(e.target.value)}
-                        maxLength={24}
-                        placeholder="Your Name"
-                        className="h-9 px-2.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-amber-400"
-                      />
+                  <div className="p-2.5 rounded-xl bg-slate-950 border border-amber-500/40 flex flex-col gap-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-[11px] text-slate-300 font-medium">
+                        Profile Picture:
+                      </span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const others = ANIMATED_AVATAR_PRESETS.filter(
+                              (p) => p.dataUrl !== progress.customPlayerAvatar
+                            );
+                            const pool = others.length > 0 ? others : ANIMATED_AVATAR_PRESETS;
+                            const chosen = pool[Math.floor(Math.random() * pool.length)];
+                            handleUpdatePlayerAvatar(chosen.dataUrl);
+                            sound.play('click');
+                          }}
+                          className="h-8 px-2.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/50 text-[11px] font-semibold text-amber-300 flex items-center gap-1 cursor-pointer"
+                        >
+                          <Shuffle className="w-3 h-3" />
+                          <span>Random Animated</span>
+                        </button>
+
+                        <label className="h-8 px-2.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/50 text-[11px] font-semibold text-emerald-300 flex items-center gap-1 cursor-pointer">
+                          <ImagePlus className="w-3 h-3" />
+                          <span>Import Photo</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              try {
+                                const dataUrl = await compressImageFileToDataUrl(file);
+                                handleUpdatePlayerAvatar(dataUrl);
+                                sound.play('click');
+                              } catch {
+                                // Ignore
+                              } finally {
+                                e.target.value = '';
+                              }
+                            }}
+                            className="hidden"
+                          />
+                        </label>
+
+                        {progress.customPlayerAvatar && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleUpdatePlayerAvatar(null);
+                              sound.play('click');
+                            }}
+                            className="h-8 px-2 rounded-lg bg-slate-900 border border-slate-700 text-[11px] text-slate-300 cursor-pointer"
+                          >
+                            Default Photo
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    <div className="sm:col-span-4 flex flex-col gap-1">
-                      <label className="text-[11px] text-slate-300">Custom ID</label>
-                      <input
-                        type="text"
-                        value={hudTagDraft}
-                        onChange={(e) => setHudTagDraft(e.target.value.toUpperCase())}
-                        maxLength={16}
-                        placeholder="PGD-777"
-                        className="h-9 px-2.5 rounded-lg bg-slate-900 border border-slate-700 font-mono-num text-xs text-amber-300 focus:outline-none focus:border-amber-400"
-                      />
-                    </div>
-                    <div className="sm:col-span-3">
-                      <button
-                        type="submit"
-                        className="w-full h-9 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs cursor-pointer"
-                      >
-                        Save ID
-                      </button>
-                    </div>
-                  </form>
+
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        handleUpdatePlayerIdentity(hudNameDraft, hudTagDraft);
+                        setIsEditingHudId(false);
+                        sound.play('click');
+                      }}
+                      className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end"
+                    >
+                      <div className="sm:col-span-5 flex flex-col gap-1">
+                        <label className="text-[11px] text-slate-300">Player Name</label>
+                        <input
+                          type="text"
+                          value={hudNameDraft}
+                          onChange={(e) => setHudNameDraft(e.target.value)}
+                          maxLength={24}
+                          placeholder="Your Name"
+                          className="h-9 px-2.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-amber-400"
+                        />
+                      </div>
+                      <div className="sm:col-span-4 flex flex-col gap-1">
+                        <label className="text-[11px] text-slate-300">Custom ID</label>
+                        <input
+                          type="text"
+                          value={hudTagDraft}
+                          onChange={(e) => setHudTagDraft(e.target.value.toUpperCase())}
+                          maxLength={16}
+                          placeholder="PGD-777"
+                          className="h-9 px-2.5 rounded-lg bg-slate-900 border border-slate-700 font-mono-num text-xs text-amber-300 focus:outline-none focus:border-amber-400"
+                        />
+                      </div>
+                      <div className="sm:col-span-3">
+                        <button
+                          type="submit"
+                          className="w-full h-9 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs cursor-pointer"
+                        >
+                          Save ID
+                        </button>
+                      </div>
+                    </form>
+                  </div>
                 )}
 
                 {/* Row 2: Dedicated Full-Width Ivory Dice + Count Bar (Zero Overlap with Left UI) */}
