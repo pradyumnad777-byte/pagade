@@ -589,6 +589,591 @@ async function startServer() {
     });
   });
 
+  // ============================================================================
+  // 6. Real-Time Authoritative Multiplayer Room Engine (Max 4 Players, Instant Start for 2/3/4 Players)
+  // ============================================================================
+  type SeatIdx = 0 | 1 | 2 | 3;
+
+  interface MpPlayer {
+    playerId: string;
+    playerName: string;
+    playerTag: string;
+    seat: SeatIdx;
+    isHost: boolean;
+    dryStreak: number;
+    consecutiveSixes: number;
+    joinedAt: number;
+  }
+
+  interface MpToken {
+    id: string;
+    seat: SeatIdx;
+    tokenIndex: number; // 0..3
+    step: number; // -1 = yard, 0..50 = main track, 51..55 = home stretch, 56 = home goal
+  }
+
+  interface MpMoveCandidate {
+    tokenIndex: number;
+    fromStep: number;
+    toStep: number;
+    exitsYard: boolean;
+    reachesHome: boolean;
+    landsOnSafe: boolean;
+    formsJodiBlock: boolean;
+    capturesTokens: { seat: SeatIdx; tokenIndex: number }[];
+  }
+
+  interface MpRoom {
+    code: string;
+    hostPlayerId: string;
+    status: 'waiting' | 'playing' | 'finished';
+    gameMode: 'classic' | 'quick_blitz';
+    players: MpPlayer[];
+    tokens: MpToken[];
+    turnSeat: SeatIdx;
+    diceValue: number | null;
+    lastRolledValue: number | null;
+    lastRolledSeat: SeatIdx | null;
+    lastMovedTokenId: string | null;
+    validMoves: MpMoveCandidate[];
+    winnerSeat: SeatIdx | null;
+    statusBanner: string;
+    updatedAt: number;
+  }
+
+  const mpRooms = new Map<string, MpRoom>();
+  const MP_SAFE_INDICES = new Set<number>([0, 8, 13, 21, 26, 34, 39, 47]);
+  const SEAT_OFFSETS: Record<SeatIdx, number> = {
+    0: 0,
+    1: 13,
+    2: 26,
+    3: 39,
+  };
+
+  function getMpGlobalTrackIndex(seat: SeatIdx, step: number): number | null {
+    if (step < 0 || step > 50) return null;
+    return (SEAT_OFFSETS[seat] + step) % 52;
+  }
+
+  function computeMpValidMoves(
+    tokens: MpToken[],
+    actingSeat: SeatIdx,
+    diceVal: number
+  ): MpMoveCandidate[] {
+    const candidates: MpMoveCandidate[] = [];
+    const myTokens = tokens.filter((t) => t.seat === actingSeat);
+    const otherTokens = tokens.filter((t) => t.seat !== actingSeat);
+
+    for (const token of myTokens) {
+      if (token.step === 56) continue;
+
+      if (token.step === -1) {
+        if (diceVal === 6) {
+          const toStep = 0;
+          const destGlobal = getMpGlobalTrackIndex(actingSeat, toStep)!;
+          const landsOnSafe = MP_SAFE_INDICES.has(destGlobal);
+          const friendlyAtStart = myTokens.filter(
+            (m) => m.tokenIndex !== token.tokenIndex && m.step === 0
+          );
+          candidates.push({
+            tokenIndex: token.tokenIndex,
+            fromStep: -1,
+            toStep: 0,
+            exitsYard: true,
+            reachesHome: false,
+            landsOnSafe,
+            formsJodiBlock: friendlyAtStart.length >= 1,
+            capturesTokens: [],
+          });
+        }
+        continue;
+      }
+
+      const toStep = token.step + diceVal;
+      if (toStep > 56) continue;
+
+      const reachesHome = toStep === 56;
+      const destGlobal = getMpGlobalTrackIndex(actingSeat, toStep);
+      const landsOnSafe =
+        reachesHome ||
+        toStep >= 51 ||
+        (destGlobal !== null && MP_SAFE_INDICES.has(destGlobal));
+
+      const friendlyAtDest =
+        destGlobal !== null
+          ? myTokens.filter(
+              (m) =>
+                m.tokenIndex !== token.tokenIndex &&
+                getMpGlobalTrackIndex(actingSeat, m.step) === destGlobal
+            )
+          : [];
+      const formsJodiBlock = destGlobal !== null && friendlyAtDest.length >= 1;
+
+      const capturesTokens: { seat: SeatIdx; tokenIndex: number }[] = [];
+      if (destGlobal !== null && !landsOnSafe) {
+        // Group opponent tokens on destGlobal by their seat so we respect Jodi pair blockades (2+ of same seat)
+        const oppOnSquare = otherTokens.filter(
+          (o) => getMpGlobalTrackIndex(o.seat, o.step) === destGlobal
+        );
+        const bySeat = new Map<SeatIdx, MpToken[]>();
+        for (const o of oppOnSquare) {
+          const list = bySeat.get(o.seat) || [];
+          list.push(o);
+          bySeat.set(o.seat, list);
+        }
+        for (const [oppSeat, list] of bySeat.entries()) {
+          // Single opponent pawn on non-safe square is captured; 2+ of same seat is a Jodi fortress
+          if (list.length === 1) {
+            capturesTokens.push({ seat: oppSeat, tokenIndex: list[0].tokenIndex });
+          }
+        }
+      }
+
+      candidates.push({
+        tokenIndex: token.tokenIndex,
+        fromStep: token.step,
+        toStep,
+        exitsYard: false,
+        reachesHome,
+        landsOnSafe,
+        formsJodiBlock,
+        capturesTokens,
+      });
+    }
+
+    return candidates;
+  }
+
+  function getNextActiveSeat(room: MpRoom, currentSeat: SeatIdx): SeatIdx {
+    const activeSeats = room.players.map((p) => p.seat).sort((a, b) => a - b);
+    if (activeSeats.length === 0) return 0;
+    const idx = activeSeats.indexOf(currentSeat);
+    if (idx === -1) return activeSeats[0];
+    return activeSeats[(idx + 1) % activeSeats.length];
+  }
+
+  function generateRoomCode(): string {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let suffix = '';
+    for (let i = 0; i < 4; i++) {
+      suffix += chars[Math.floor(Math.random() * chars.length)];
+    }
+    const code = `PG${suffix}`;
+    return mpRooms.has(code) ? generateRoomCode() : code;
+  }
+
+  function createInitialRoomTokens(players: MpPlayer[]): MpToken[] {
+    const tokens: MpToken[] = [];
+    for (const p of players) {
+      for (let i = 0; i < 4; i++) {
+        tokens.push({
+          id: `s${p.seat}-${i}`,
+          seat: p.seat,
+          tokenIndex: i,
+          // Pawn #1 (index 0) starts deployed at step 0 so every player can move immediately!
+          step: i === 0 ? 0 : -1,
+        });
+      }
+    }
+    return tokens;
+  }
+
+  // Create a new Multiplayer Battle Room (Max 4 players)
+  app.post('/api/multiplayer/create', (req, res) => {
+    const {
+      playerId,
+      playerName,
+      playerTag,
+      gameMode,
+    }: {
+      playerId?: string;
+      playerName?: string;
+      playerTag?: string;
+      gameMode?: 'classic' | 'quick_blitz';
+    } = req.body || {};
+
+    const cleanId = (playerId || `p_${Date.now()}`).trim();
+    const cleanName = (playerName || 'Challenger').trim().slice(0, 24) || 'Challenger';
+    const cleanTag = (playerTag || 'PGD-101').trim().slice(0, 16) || 'PGD-101';
+    const code = generateRoomCode();
+
+    const hostPlayer: MpPlayer = {
+      playerId: cleanId,
+      playerName: cleanName,
+      playerTag: cleanTag,
+      seat: 0,
+      isHost: true,
+      dryStreak: 0,
+      consecutiveSixes: 0,
+      joinedAt: Date.now(),
+    };
+
+    const room: MpRoom = {
+      code,
+      hostPlayerId: cleanId,
+      status: 'waiting',
+      gameMode: gameMode === 'quick_blitz' ? 'quick_blitz' : 'classic',
+      players: [hostPlayer],
+      tokens: createInitialRoomTokens([hostPlayer]),
+      turnSeat: 0,
+      diceValue: null,
+      lastRolledValue: null,
+      lastRolledSeat: null,
+      lastMovedTokenId: null,
+      validMoves: [],
+      winnerSeat: null,
+      statusBanner: `Room ${code} created by ${cleanName} (${cleanTag}). Share code to connect up to 4 players or start anytime!`,
+      updatedAt: Date.now(),
+    };
+
+    mpRooms.set(code, room);
+    res.json({ room });
+  });
+
+  // Join an existing Multiplayer Room by Code (Strictly max 4 players)
+  app.post('/api/multiplayer/join', (req, res) => {
+    const {
+      code,
+      playerId,
+      playerName,
+      playerTag,
+    }: {
+      code?: string;
+      playerId?: string;
+      playerName?: string;
+      playerTag?: string;
+    } = req.body || {};
+
+    const cleanCode = (code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const room = mpRooms.get(cleanCode);
+    if (!room) {
+      res.status(404).json({ error: `Room "${cleanCode}" not found. Check the 6-character code.` });
+      return;
+    }
+
+    const cleanId = (playerId || `p_${Date.now()}`).trim();
+    const cleanName = (playerName || 'Challenger').trim().slice(0, 24) || 'Challenger';
+    const cleanTag = (playerTag || 'PGD-101').trim().slice(0, 16) || 'PGD-101';
+
+    // Check if this device/player is already in the room (reconnect / update name)
+    const existing = room.players.find((p) => p.playerId === cleanId);
+    if (existing) {
+      existing.playerName = cleanName;
+      existing.playerTag = cleanTag;
+      room.updatedAt = Date.now();
+      res.json({ room });
+      return;
+    }
+
+    // Strict 4-player cap: Never allow more than 4 players
+    if (room.players.length >= 4) {
+      res.status(400).json({
+        error: 'This room already has the maximum of 4 players. Only 4 players are allowed per battle.',
+      });
+      return;
+    }
+
+    if (room.status !== 'waiting') {
+      res.status(400).json({
+        error: 'This match is already in progress. Create a new room or wait for rematch.',
+      });
+      return;
+    }
+
+    const takenSeats = new Set(room.players.map((p) => p.seat));
+    const availableSeats: SeatIdx[] = ([0, 1, 2, 3] as SeatIdx[]).filter(
+      (s) => !takenSeats.has(s)
+    );
+    const assignedSeat: SeatIdx = availableSeats[0] ?? 0;
+
+    const newPlayer: MpPlayer = {
+      playerId: cleanId,
+      playerName: cleanName,
+      playerTag: cleanTag,
+      seat: assignedSeat,
+      isHost: false,
+      dryStreak: 0,
+      consecutiveSixes: 0,
+      joinedAt: Date.now(),
+    };
+
+    room.players.push(newPlayer);
+    room.players.sort((a, b) => a.seat - b.seat);
+    room.tokens = createInitialRoomTokens(room.players);
+    room.statusBanner = `${cleanName} (${cleanTag}) joined Seat #${assignedSeat + 1}! (${room.players.length}/4 players ready)`;
+    room.updatedAt = Date.now();
+
+    res.json({ room });
+  });
+
+  // Update Player Name & Custom ID inside an active or waiting room
+  app.post('/api/multiplayer/update-profile', (req, res) => {
+    const {
+      code,
+      playerId,
+      playerName,
+      playerTag,
+    }: {
+      code?: string;
+      playerId?: string;
+      playerName?: string;
+      playerTag?: string;
+    } = req.body || {};
+
+    const cleanCode = (code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const room = mpRooms.get(cleanCode);
+    if (!room) {
+      res.status(404).json({ error: 'Room not found.' });
+      return;
+    }
+
+    const player = room.players.find((p) => p.playerId === playerId);
+    if (player) {
+      if (playerName && playerName.trim()) {
+        player.playerName = playerName.trim().slice(0, 24);
+      }
+      if (playerTag && playerTag.trim()) {
+        player.playerTag = playerTag.trim().slice(0, 16);
+      }
+      room.updatedAt = Date.now();
+    }
+
+    res.json({ room });
+  });
+
+  // Start Match: Starts immediately for 2, 3, or 4 players (or even 1 player) with NO minimum player validation blocking it!
+  app.post('/api/multiplayer/start', (req, res) => {
+    const {
+      code,
+      gameMode,
+    }: {
+      code?: string;
+      playerId?: string;
+      gameMode?: 'classic' | 'quick_blitz';
+    } = req.body || {};
+
+    const cleanCode = (code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const room = mpRooms.get(cleanCode);
+    if (!room) {
+      res.status(404).json({ error: 'Room not found.' });
+      return;
+    }
+
+    if (room.players.length > 4) {
+      res.status(400).json({ error: 'Maximum 4 players allowed.' });
+      return;
+    }
+
+    if (gameMode) {
+      room.gameMode = gameMode === 'quick_blitz' ? 'quick_blitz' : 'classic';
+    }
+
+    room.players.sort((a, b) => a.seat - b.seat);
+    for (const p of room.players) {
+      p.dryStreak = 0;
+      p.consecutiveSixes = 0;
+    }
+
+    room.tokens = createInitialRoomTokens(room.players);
+    room.status = 'playing';
+    room.turnSeat = room.players[0]?.seat ?? 0;
+    room.diceValue = null;
+    room.lastRolledValue = null;
+    room.lastRolledSeat = null;
+    room.lastMovedTokenId = null;
+    room.validMoves = [];
+    room.winnerSeat = null;
+
+    const firstPlayer = room.players.find((p) => p.seat === room.turnSeat);
+    room.statusBanner = `Battle started with ${room.players.length} player${
+      room.players.length === 1 ? '' : 's'
+    }! ${firstPlayer?.playerName || 'Seat 1'}'s turn to cast the ivory dice.`;
+    room.updatedAt = Date.now();
+
+    res.json({ room });
+  });
+
+  // Roll Dice in Multiplayer Battle
+  app.post('/api/multiplayer/roll', (req, res) => {
+    const { code, playerId }: { code?: string; playerId?: string } = req.body || {};
+    const cleanCode = (code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const room = mpRooms.get(cleanCode);
+    if (!room) {
+      res.status(404).json({ error: 'Room not found.' });
+      return;
+    }
+
+    if (room.status !== 'playing' || room.winnerSeat !== null) {
+      res.status(400).json({ error: 'Match is not currently active.' });
+      return;
+    }
+
+    const activePlayer = room.players.find((p) => p.seat === room.turnSeat);
+    if (!activePlayer || activePlayer.playerId !== playerId) {
+      res.status(403).json({ error: 'Wait for your turn to roll the dice.' });
+      return;
+    }
+
+    if (room.diceValue !== null) {
+      res.status(400).json({ error: 'Dice already rolled—select a glowing pawn to move.' });
+      return;
+    }
+
+    // Roll 1..6 with Pity-6 protection & 3-six cap
+    const lockedCount = room.tokens.filter(
+      (t) => t.seat === room.turnSeat && t.step === -1
+    ).length;
+
+    let rolled: number;
+    if (activePlayer.consecutiveSixes >= 2) {
+      rolled = Math.floor(Math.random() * 5) + 1;
+    } else if (lockedCount > 0 && activePlayer.dryStreak >= 5) {
+      rolled = 6;
+    } else {
+      rolled = Math.floor(Math.random() * 6) + 1;
+    }
+
+    if (rolled === 6) {
+      activePlayer.dryStreak = 0;
+    } else if (lockedCount > 0) {
+      activePlayer.dryStreak += 1;
+    }
+
+    room.lastRolledValue = rolled;
+    room.lastRolledSeat = room.turnSeat;
+
+    const moves = computeMpValidMoves(room.tokens, room.turnSeat, rolled);
+
+    if (moves.length === 0) {
+      activePlayer.consecutiveSixes = 0;
+      const nextSeat = getNextActiveSeat(room, room.turnSeat);
+      const nextPlayer = room.players.find((p) => p.seat === nextSeat);
+      room.diceValue = null;
+      room.validMoves = [];
+      room.turnSeat = nextSeat;
+      room.statusBanner = `${activePlayer.playerName} rolled ${rolled} (no legal moves) · ${
+        nextPlayer?.playerName || 'Next player'
+      }'s turn!`;
+      room.updatedAt = Date.now();
+      res.json({ room });
+      return;
+    }
+
+    room.diceValue = rolled;
+    room.validMoves = moves;
+    room.statusBanner = `${activePlayer.playerName} rolled ${rolled}! Select a glowing pawn to advance.`;
+    room.updatedAt = Date.now();
+
+    res.json({ room });
+  });
+
+  // Move Pawn in Multiplayer Battle
+  app.post('/api/multiplayer/move', (req, res) => {
+    const {
+      code,
+      playerId,
+      tokenIndex,
+    }: {
+      code?: string;
+      playerId?: string;
+      tokenIndex?: number;
+    } = req.body || {};
+
+    const cleanCode = (code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const room = mpRooms.get(cleanCode);
+    if (!room || room.status !== 'playing' || room.diceValue === null) {
+      res.status(400).json({ error: 'No active roll to move.' });
+      return;
+    }
+
+    const activePlayer = room.players.find((p) => p.seat === room.turnSeat);
+    if (!activePlayer || activePlayer.playerId !== playerId) {
+      res.status(403).json({ error: 'Not your turn.' });
+      return;
+    }
+
+    const chosenMove = room.validMoves.find((m) => m.tokenIndex === Number(tokenIndex));
+    if (!chosenMove) {
+      res.status(400).json({ error: 'Invalid pawn selection for this roll.' });
+      return;
+    }
+
+    const rolledVal = room.diceValue;
+    let capturedCount = 0;
+
+    room.tokens = room.tokens.map((t) => {
+      if (t.seat === room.turnSeat && t.tokenIndex === chosenMove.tokenIndex) {
+        return { ...t, step: chosenMove.toStep };
+      }
+      if (
+        chosenMove.capturesTokens.some(
+          (cap) => cap.seat === t.seat && cap.tokenIndex === t.tokenIndex
+        )
+      ) {
+        capturedCount++;
+        return { ...t, step: -1 };
+      }
+      return t;
+    });
+
+    room.lastMovedTokenId = `s${room.turnSeat}-${chosenMove.tokenIndex}`;
+    room.diceValue = null;
+    room.validMoves = [];
+
+    const targetHome = room.gameMode === 'quick_blitz' ? 2 : 4;
+    const finishedCount = room.tokens.filter(
+      (t) => t.seat === room.turnSeat && t.step === 56
+    ).length;
+
+    if (finishedCount >= targetHome) {
+      room.winnerSeat = room.turnSeat;
+      room.status = 'finished';
+      room.statusBanner = `Victory! ${activePlayer.playerName} (${activePlayer.playerTag}) led ${targetHome} pawns into the Royal Mandapa!`;
+      room.updatedAt = Date.now();
+      res.json({ room });
+      return;
+    }
+
+    const grantsBonusTurn =
+      rolledVal === 6 || capturedCount > 0 || chosenMove.reachesHome;
+
+    if (grantsBonusTurn) {
+      activePlayer.consecutiveSixes = rolledVal === 6 ? activePlayer.consecutiveSixes + 1 : 0;
+      const reason =
+        capturedCount > 0
+          ? 'captured an opponent pawn'
+          : chosenMove.reachesHome
+          ? 'guided a pawn Home'
+          : 'rolled a 6';
+      room.statusBanner = `${activePlayer.playerName} ${reason}! Bonus roll granted—cast again.`;
+    } else {
+      activePlayer.consecutiveSixes = 0;
+      const nextSeat = getNextActiveSeat(room, room.turnSeat);
+      const nextPlayer = room.players.find((p) => p.seat === nextSeat);
+      room.turnSeat = nextSeat;
+      room.statusBanner = `${activePlayer.playerName} moved Pawn #${
+        chosenMove.tokenIndex + 1
+      } (${rolledVal} steps) · ${nextPlayer?.playerName || 'Next player'}'s turn!`;
+    }
+
+    room.updatedAt = Date.now();
+    res.json({ room });
+  });
+
+  // Poll Room State by Code
+  app.get('/api/multiplayer/room/:code', (req, res) => {
+    const cleanCode = String(req.params.code || '')
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '');
+    const room = mpRooms.get(cleanCode);
+    if (!room) {
+      res.status(404).json({ error: 'Room not found.' });
+      return;
+    }
+    res.json({ room });
+  });
+
   // Mount Vite middleware in development or static dist in production
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

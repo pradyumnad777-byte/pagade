@@ -21,6 +21,8 @@ import {
   UserCheck,
   Gauge,
   BarChart3,
+  Users,
+  Edit3,
 } from 'lucide-react';
 import {
   DIFFICULTY_TIERS,
@@ -45,6 +47,7 @@ import { CampaignPathView } from './components/CampaignPathView';
 import { SkillsArmoryView } from './components/SkillsArmoryView';
 import { RulesGuideView } from './components/RulesGuideView';
 import { AccountSyncView, SyncableProgress } from './components/AccountSyncView';
+import { MultiplayerBattleView } from './components/MultiplayerBattleView';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth, syncPlayerCloudProgress } from './firebase';
 
@@ -53,7 +56,7 @@ const SHAKUNI_AVATAR = '/src/assets/images/shakuni_avatar_portrait_1793947874829
 const PLAYER_AVATAR = '/src/assets/images/player_avatar_portrait_1793947877320.jpg';
 const PALACE_BANNER = '/src/assets/images/pagade_palace_banner_1793947876375.jpg';
 
-type NavTab = 'campaign' | 'match' | 'armory' | 'rules' | 'account';
+type NavTab = 'campaign' | 'match' | 'multiplayer' | 'armory' | 'rules' | 'account';
 
 const STORAGE_KEY = 'pagade_royal_campaign_v2';
 
@@ -70,11 +73,17 @@ function createInitialTokens(): Token[] {
 export default function App() {
   // Persistent Campaign & Account Progression
   const [progress, setProgress] = useState<SyncableProgress>(() => {
+    const defaultTag = `PGD-${Math.floor(100 + Math.random() * 899)}`;
     try {
       const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem('pagade_royal_campaign_v1');
       if (raw) {
         const parsed = JSON.parse(raw);
         return {
+          customPlayerName:
+            parsed.customPlayerName ||
+            parsed.accountProfile?.displayName ||
+            'Royal Challenger',
+          customPlayerTag: parsed.customPlayerTag || defaultTag,
           highestUnlockedLevel: Math.max(1, Number(parsed.highestUnlockedLevel) || 1),
           totalWins: Number(parsed.totalWins) || 0,
           totalCaptures: Number(parsed.totalCaptures) || 0,
@@ -90,6 +99,8 @@ export default function App() {
       // Ignore storage errors
     }
     return {
+      customPlayerName: 'Royal Challenger',
+      customPlayerTag: defaultTag,
       highestUnlockedLevel: 1,
       totalWins: 0,
       totalCaptures: 0,
@@ -102,6 +113,33 @@ export default function App() {
     };
   });
 
+  const [isEditingHudId, setIsEditingHudId] = useState<boolean>(false);
+  const [hudNameDraft, setHudNameDraft] = useState<string>(progress.customPlayerName);
+  const [hudTagDraft, setHudTagDraft] = useState<string>(progress.customPlayerTag);
+
+  useEffect(() => {
+    setHudNameDraft(progress.customPlayerName);
+    setHudTagDraft(progress.customPlayerTag);
+  }, [progress.customPlayerName, progress.customPlayerTag]);
+
+  const handleUpdatePlayerIdentity = useCallback((newName: string, newTag: string) => {
+    const cleanName = newName.trim().slice(0, 24) || 'Royal Challenger';
+    const cleanTag =
+      newTag
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9-_]/g, '')
+        .slice(0, 16) || 'PGD-777';
+    setProgress((prev) => ({
+      ...prev,
+      customPlayerName: cleanName,
+      customPlayerTag: cleanTag,
+      accountProfile: prev.accountProfile
+        ? { ...prev.accountProfile, displayName: cleanName }
+        : null,
+    }));
+  }, []);
+
   // Listen for Firebase Auth state and automatically restore/merge cloud progress
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -111,18 +149,25 @@ export default function App() {
       try {
         const merged = await syncPlayerCloudProgress(
           user.uid,
-          user.displayName || 'Royal Challenger',
+          progress.customPlayerName || user.displayName || 'Royal Challenger',
           provider,
           progress
         );
         setProgress((prev) => ({
           ...prev,
           ...merged,
+          customPlayerName:
+            prev.customPlayerName && prev.customPlayerName !== 'Royal Challenger'
+              ? prev.customPlayerName
+              : user.displayName || 'Royal Challenger',
           accountProfile: {
             uid: user.uid,
             provider,
             email: user.email || 'Cloud Account',
-            displayName: user.displayName || 'Royal Challenger',
+            displayName:
+              prev.customPlayerName && prev.customPlayerName !== 'Royal Challenger'
+                ? prev.customPlayerName
+                : user.displayName || 'Royal Challenger',
             lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             isCloudSynced: true,
           },
@@ -141,7 +186,7 @@ export default function App() {
       if (auth.currentUser && progress.accountProfile) {
         syncPlayerCloudProgress(
           auth.currentUser.uid,
-          progress.accountProfile.displayName,
+          progress.customPlayerName || progress.accountProfile.displayName,
           progress.accountProfile.provider,
           progress
         ).catch(() => {});
@@ -150,6 +195,8 @@ export default function App() {
       // Ignore storage errors
     }
   }, [
+    progress.customPlayerName,
+    progress.customPlayerTag,
     progress.highestUnlockedLevel,
     progress.totalWins,
     progress.totalCaptures,
@@ -774,6 +821,19 @@ export default function App() {
             Sabha Board
           </a>
           <a
+            href="#multiplayer"
+            onClick={(e) => {
+              e.preventDefault();
+              setActiveTab('multiplayer');
+              sound.play('click');
+            }}
+            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 ${
+              activeTab === 'multiplayer' ? 'text-amber-400 underline underline-offset-8' : ''
+            }`}
+          >
+            Multiplayer
+          </a>
+          <a
             href="#armory"
             onClick={(e) => {
               e.preventDefault();
@@ -785,19 +845,6 @@ export default function App() {
             }`}
           >
             Skills Armory
-          </a>
-          <a
-            href="#rules"
-            onClick={(e) => {
-              e.preventDefault();
-              setActiveTab('rules');
-              sound.play('click');
-            }}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 ${
-              activeTab === 'rules' ? 'text-amber-400 underline underline-offset-8' : ''
-            }`}
-          >
-            Ranks & Rules
           </a>
           <a
             href="#account"
@@ -844,6 +891,16 @@ export default function App() {
             onStartMatch={(lvl) => startMatchAtLevel(lvl)}
             palaceBannerUrl={PALACE_BANNER}
             shakuniAvatarUrl={SHAKUNI_AVATAR}
+          />
+        )}
+
+        {activeTab === 'multiplayer' && (
+          <MultiplayerBattleView
+            customPlayerName={progress.customPlayerName}
+            customPlayerTag={progress.customPlayerTag}
+            gameMode={progress.gameMode}
+            onUpdateIdentity={handleUpdatePlayerIdentity}
+            isLandscapeCompact={isMobileLandscape}
           />
         )}
 
@@ -988,8 +1045,9 @@ export default function App() {
                 isMobileLandscape ? 'col-span-6' : 'md:col-span-5'
               } flex flex-col gap-3.5`}
             >
-              {/* Player Controller & Ivory Dice Card */}
-              <div className="rounded-2xl border border-slate-800 bg-[#171F2C] p-3.5 sm:p-4 flex flex-col gap-3.5">
+              {/* Player Controller & Ivory Dice Card (Stacked cleanly so Dice Count never overlaps Player Info) */}
+              <div className="rounded-2xl border border-slate-800 bg-[#171F2C] p-3.5 sm:p-4 flex flex-col gap-3">
+                {/* Row 1: Player Avatar, Custom Name & ID Tag, and Edit ID Trigger */}
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2.5 min-w-0">
                     <img
@@ -1005,11 +1063,12 @@ export default function App() {
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5 text-xs text-slate-300">
                         <span className="font-bold text-white truncate">
-                          {progress.accountProfile?.displayName || 'Challenger'}
+                          {progress.customPlayerName ||
+                            progress.accountProfile?.displayName ||
+                            'Royal Challenger'}
                         </span>
-                        <span aria-hidden="true">·</span>
-                        <span className="text-emerald-400 font-medium shrink-0">
-                          {currentMatchNode.tier.name}
+                        <span className="font-mono-num text-[11px] px-1.5 py-0.5 rounded bg-slate-900 border border-amber-500/40 text-amber-300 shrink-0">
+                          {progress.customPlayerTag}
                         </span>
                       </div>
                       <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5">
@@ -1036,19 +1095,88 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Interactive Carved Ivory Long Dice + Persistent Roll Count Badge */}
-                  <IvoryDice
-                    value={diceValue}
-                    lastRolledValue={lastRolledValue}
-                    lastRolledOwner={lastRolledOwner}
-                    isRolling={isRolling}
-                    onRoll={() => handlePlayerRoll()}
-                    disabled={turn !== 'player' || diceValue !== null || isRolling || !!winner}
-                    ownerLabel="Shakuni's Roll"
-                    bonusSteps={bonusDiceSteps}
-                    multiplier={moveMultiplier}
-                  />
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingHudId((prev) => !prev)}
+                      title="Edit Player Name & ID"
+                      className="min-h-[36px] px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[11px] font-medium text-amber-300 flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
+                    >
+                      <Edit3 className="w-3 h-3" />
+                      <span>{isEditingHudId ? 'Close' : 'Edit ID'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTab('multiplayer');
+                        sound.play('click');
+                      }}
+                      title="Open 4-Player Multiplayer Room Battle"
+                      className="min-h-[36px] px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/50 text-[11px] font-semibold text-emerald-300 flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
+                    >
+                      <Users className="w-3 h-3" />
+                      <span>Multiplayer</span>
+                    </button>
+                  </div>
                 </div>
+
+                {/* Inline Player Name / Custom ID Editor */}
+                {isEditingHudId && (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleUpdatePlayerIdentity(hudNameDraft, hudTagDraft);
+                      setIsEditingHudId(false);
+                      sound.play('click');
+                    }}
+                    className="p-2.5 rounded-xl bg-slate-950 border border-amber-500/40 grid grid-cols-1 sm:grid-cols-12 gap-2 items-end"
+                  >
+                    <div className="sm:col-span-5 flex flex-col gap-1">
+                      <label className="text-[11px] text-slate-300">Player Name</label>
+                      <input
+                        type="text"
+                        value={hudNameDraft}
+                        onChange={(e) => setHudNameDraft(e.target.value)}
+                        maxLength={24}
+                        placeholder="Your Name"
+                        className="h-9 px-2.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-amber-400"
+                      />
+                    </div>
+                    <div className="sm:col-span-4 flex flex-col gap-1">
+                      <label className="text-[11px] text-slate-300">Custom ID</label>
+                      <input
+                        type="text"
+                        value={hudTagDraft}
+                        onChange={(e) => setHudTagDraft(e.target.value.toUpperCase())}
+                        maxLength={16}
+                        placeholder="PGD-777"
+                        className="h-9 px-2.5 rounded-lg bg-slate-900 border border-slate-700 font-mono-num text-xs text-amber-300 focus:outline-none focus:border-amber-400"
+                      />
+                    </div>
+                    <div className="sm:col-span-3">
+                      <button
+                        type="submit"
+                        className="w-full h-9 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs cursor-pointer"
+                      >
+                        Save ID
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {/* Row 2: Dedicated Full-Width Ivory Dice + Count Bar (Zero Overlap with Left UI) */}
+                <IvoryDice
+                  value={diceValue}
+                  lastRolledValue={lastRolledValue}
+                  lastRolledOwner={lastRolledOwner}
+                  isRolling={isRolling}
+                  onRoll={() => handlePlayerRoll()}
+                  disabled={turn !== 'player' || diceValue !== null || isRolling || !!winner}
+                  ownerLabel="Shakuni's Roll"
+                  bonusSteps={bonusDiceSteps}
+                  multiplier={moveMultiplier}
+                />
 
                 {/* Store-Review QoL Bar: Mode (Classic 4 vs Quick Blitz 2), Manual/Auto Move, Fast Speed, & Fair Dice Log */}
                 <div className="pt-2.5 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-1.5">
@@ -1268,20 +1396,30 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Quick Difficulty Switcher & Back to Saga Map */}
+              {/* Quick Difficulty Switcher, Ranks & Rules, & Back to Saga Map */}
               <div className="rounded-2xl border border-slate-800 bg-[#171F2C] p-3.5 flex flex-col gap-2.5">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-medium text-slate-300">
                     Difficulty Rank Override
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('campaign')}
-                    className="text-xs text-amber-400 hover:underline flex items-center gap-1 cursor-pointer"
-                  >
-                    <ArrowLeft className="w-3.5 h-3.5" />
-                    <span>Saga Map</span>
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('rules')}
+                      className="text-xs text-slate-300 hover:text-white flex items-center gap-1 cursor-pointer"
+                    >
+                      <BookOpen className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Ranks & Rules</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('campaign')}
+                      className="text-xs text-amber-400 hover:underline flex items-center gap-1 cursor-pointer"
+                    >
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                      <span>Saga Map</span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
@@ -1443,6 +1581,22 @@ export default function App() {
         <button
           type="button"
           onClick={() => {
+            setActiveTab('multiplayer');
+            sound.play('click');
+          }}
+          className={`min-h-[44px] flex flex-col items-center justify-center cursor-pointer ${
+            activeTab === 'multiplayer' ? 'text-amber-400' : 'text-slate-400'
+          }`}
+        >
+          <Users className="w-4 h-4 sm:w-5 sm:h-5" />
+          <span className="text-[10px] font-medium tracking-tight mt-0.5 whitespace-nowrap shrink-0">
+            Multiplayer
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
             setActiveTab('armory');
             sound.play('click');
           }}
@@ -1453,22 +1607,6 @@ export default function App() {
           <Sparkles className="w-4 h-4 sm:w-5 sm:h-5" />
           <span className="text-[10px] font-medium tracking-tight mt-0.5 whitespace-nowrap shrink-0">
             Skills ({unlockedSkills.length})
-          </span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => {
-            setActiveTab('rules');
-            sound.play('click');
-          }}
-          className={`min-h-[44px] flex flex-col items-center justify-center cursor-pointer ${
-            activeTab === 'rules' ? 'text-amber-400' : 'text-slate-400'
-          }`}
-        >
-          <BookOpen className="w-4 h-4 sm:w-5 sm:h-5" />
-          <span className="text-[10px] font-medium tracking-tight mt-0.5 whitespace-nowrap shrink-0">
-            Ranks
           </span>
         </button>
 

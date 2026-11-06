@@ -163,26 +163,26 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
 
   return (
     <div
-      className={`relative w-full aspect-square mx-auto rounded-2xl p-2 bg-[#1B1614] border-2 border-amber-500/40 shadow-2xl select-none transition-all ${
+      className={`w-full mx-auto flex flex-col gap-1.5 select-none ${
         isLandscapeCompact
           ? 'max-w-[min(74vh,430px)]'
           : 'max-w-[min(94vw,460px)]'
       }`}
     >
-      {/* Floating Dice Count Pill on Top of Board When Rolled */}
+      {/* Clean Non-Overlapping Dice Count Bar Above Board When Rolled */}
       {currentDiceCount !== null && (
-        <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 z-40 px-3.5 py-1 rounded-full bg-emerald-500 text-slate-950 font-mono-num font-bold text-xs shadow-lg border border-emerald-200 flex items-center gap-1.5 whitespace-nowrap">
+        <div className="w-full px-3.5 py-1.5 rounded-xl bg-emerald-500/20 border border-emerald-400/60 text-emerald-200 font-mono-num font-bold text-xs flex items-center justify-between gap-2">
           <span>Dice Count: {currentDiceCount}</span>
-          <span>·</span>
-          <span>
+          <span className="text-amber-300 font-sans font-semibold truncate">
             {validMoves.length > 0
-              ? 'Tap Glowing Pawn on Board'
-              : 'Need 6 to Exit Yard'}
+              ? 'Tap glowing pawn or target square to move'
+              : 'Need 6 to deploy from yard'}
           </span>
         </div>
       )}
 
-      <div className="w-full h-full grid grid-cols-15 grid-rows-15 bg-[#2A1F1A] rounded-xl overflow-hidden border border-amber-500/30">
+      <div className="relative w-full aspect-square rounded-2xl p-2 bg-[#1B1614] border-2 border-amber-500/40 shadow-2xl">
+        <div className="w-full h-full grid grid-cols-15 grid-rows-15 bg-[#2A1F1A] rounded-xl overflow-hidden border border-amber-500/30">
         {Array.from({ length: 15 }).map((_, r) =>
           Array.from({ length: 15 }).map((__, c) => {
             const coordKey = `${r},${c}`;
@@ -413,7 +413,9 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
             );
           })
         )}
+        </div>
       </div>
     </div>
   );
 };
+

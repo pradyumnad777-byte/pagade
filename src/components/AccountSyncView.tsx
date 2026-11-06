@@ -45,6 +45,8 @@ export interface AccountProfile {
 }
 
 export interface SyncableProgress {
+  customPlayerName: string;
+  customPlayerTag: string;
   highestUnlockedLevel: number;
   totalWins: number;
   totalCaptures: number;
@@ -99,6 +101,42 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
   const [appleSetupNotice, setAppleSetupNotice] = useState<boolean>(false);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [copiedCode, setCopiedCode] = useState(false);
+
+  // Custom Player Name & Custom Gamer ID state
+  const [nameInput, setNameInput] = useState<string>(
+    progress.customPlayerName || progress.accountProfile?.displayName || 'Royal Challenger'
+  );
+  const [tagInput, setTagInput] = useState<string>(progress.customPlayerTag || 'PGD-777');
+
+  useEffect(() => {
+    setNameInput(
+      progress.customPlayerName || progress.accountProfile?.displayName || 'Royal Challenger'
+    );
+    setTagInput(progress.customPlayerTag || 'PGD-777');
+  }, [progress.customPlayerName, progress.customPlayerTag, progress.accountProfile?.displayName]);
+
+  const handleSaveIdentity = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanName = nameInput.trim().slice(0, 24) || 'Royal Challenger';
+    const cleanTag =
+      tagInput
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9-_]/g, '')
+        .slice(0, 16) || 'PGD-777';
+    onUpdateProgress({
+      ...progress,
+      customPlayerName: cleanName,
+      customPlayerTag: cleanTag,
+      accountProfile: progress.accountProfile
+        ? {
+            ...progress.accountProfile,
+            displayName: cleanName,
+          }
+        : null,
+    });
+    setFeedbackMsg(`Saved your Player Name ("${cleanName}") and Custom ID ("${cleanTag}")!`);
+  };
 
   // Admin RBAC State (Strictly restricted to pradyumnad777@gmail.com + delegated admin emails)
   const signedInEmail = (
@@ -626,6 +664,65 @@ export const AccountSyncView: React.FC<AccountSyncViewProps> = ({
           </button>
         </div>
       )}
+
+      {/* CUSTOM PLAYER ID & NAMING CARD */}
+      <form
+        onSubmit={handleSaveIdentity}
+        className="rounded-2xl border border-amber-500/35 bg-[#171F2C] p-5 flex flex-col gap-3.5"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <h2 className="font-display text-base font-bold text-white">
+              Custom Player Name & Gamer ID
+            </h2>
+            <p className="text-xs text-slate-300 mt-0.5">
+              Customize your in-game Display Name and Player ID Tag for both Single-Player Saga and 4-Player Multiplayer Battles.
+            </p>
+          </div>
+          <span className="font-mono-num text-xs text-amber-400">
+            Active ID: <strong className="text-white">{progress.customPlayerName}</strong> ({progress.customPlayerTag})
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+          <div className="sm:col-span-6 flex flex-col gap-1">
+            <label className="text-xs text-slate-300 font-medium">
+              Your Display Name
+            </label>
+            <input
+              type="text"
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              maxLength={24}
+              placeholder="e.g. Samrat Pradyumna"
+              className="h-11 px-3.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-amber-400"
+            />
+          </div>
+
+          <div className="sm:col-span-4 flex flex-col gap-1">
+            <label className="text-xs text-slate-300 font-medium">
+              Custom Player ID Tag
+            </label>
+            <input
+              type="text"
+              value={tagInput}
+              onChange={(e) => setTagInput(e.target.value.toUpperCase())}
+              maxLength={16}
+              placeholder="e.g. PGD-777"
+              className="h-11 px-3.5 rounded-xl bg-slate-900 border border-slate-700 font-mono-num text-xs text-amber-300 focus:outline-none focus:border-amber-400"
+            />
+          </div>
+
+          <div className="sm:col-span-2">
+            <button
+              type="submit"
+              className="w-full min-h-[44px] px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <span>Save ID</span>
+            </button>
+          </div>
+        </div>
+      </form>
 
       {/* PLAYER ACCOUNT SECTION: Always visible to players so they can log in with Google / Apple */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">

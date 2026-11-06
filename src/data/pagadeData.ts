@@ -282,6 +282,120 @@ export const SHAKUNI_YARD_COORDS: [number, number][] = [
 // 47 -> [12, 8] (Bottom Arm Right Star)
 export const SAFE_GLOBAL_INDICES = new Set<number>([0, 8, 13, 21, 26, 34, 39, 47]);
 
+export type SeatIndex = 0 | 1 | 2 | 3;
+
+export interface MultiplayerSeatConfig {
+  seat: SeatIndex;
+  name: string;
+  colorName: string;
+  primaryHex: string;
+  borderHex: string;
+  bgClass: string;
+  textClass: string;
+  trackOffset: number;
+  yardCoords: [number, number][];
+  homeCoords: [number, number][];
+}
+
+export const MULTIPLAYER_SEATS: MultiplayerSeatConfig[] = [
+  {
+    seat: 0,
+    name: 'Sovereign Gold',
+    colorName: 'Amber',
+    primaryHex: '#F59E0B',
+    borderHex: '#FEF3C7',
+    bgClass: 'bg-amber-500',
+    textClass: 'text-amber-400',
+    trackOffset: 0, // Starts at [13, 6] (Bottom-Left)
+    yardCoords: [
+      [10, 1],
+      [10, 4],
+      [13, 1],
+      [13, 4],
+    ],
+    homeCoords: [
+      [13, 7],
+      [12, 7],
+      [11, 7],
+      [10, 7],
+      [9, 7],
+      [8, 7],
+    ],
+  },
+  {
+    seat: 1,
+    name: 'Emerald Vayu',
+    colorName: 'Emerald',
+    primaryHex: '#10B981',
+    borderHex: '#D1FAE5',
+    bgClass: 'bg-emerald-500',
+    textClass: 'text-emerald-400',
+    trackOffset: 13, // Starts at [6, 1] (Top-Left)
+    yardCoords: [
+      [1, 1],
+      [1, 4],
+      [4, 1],
+      [4, 4],
+    ],
+    homeCoords: [
+      [7, 1],
+      [7, 2],
+      [7, 3],
+      [7, 4],
+      [7, 5],
+      [7, 6],
+    ],
+  },
+  {
+    seat: 2,
+    name: 'Crimson Agni',
+    colorName: 'Crimson',
+    primaryHex: '#E11D48',
+    borderHex: '#FFE4E6',
+    bgClass: 'bg-rose-600',
+    textClass: 'text-rose-400',
+    trackOffset: 26, // Starts at [1, 8] (Top-Right)
+    yardCoords: [
+      [1, 10],
+      [1, 13],
+      [4, 10],
+      [4, 13],
+    ],
+    homeCoords: [
+      [1, 7],
+      [2, 7],
+      [3, 7],
+      [4, 7],
+      [5, 7],
+      [6, 7],
+    ],
+  },
+  {
+    seat: 3,
+    name: 'Sapphire Indra',
+    colorName: 'Sapphire',
+    primaryHex: '#0EA5E9',
+    borderHex: '#E0F2FE',
+    bgClass: 'bg-sky-500',
+    textClass: 'text-sky-400',
+    trackOffset: 39, // Starts at [8, 13] (Bottom-Right)
+    yardCoords: [
+      [10, 10],
+      [10, 13],
+      [13, 10],
+      [13, 13],
+    ],
+    homeCoords: [
+      [7, 13],
+      [7, 12],
+      [7, 11],
+      [7, 10],
+      [7, 9],
+      [7, 8],
+    ],
+  },
+];
+
 export interface LevelNodeInfo {
   level: number;
   title: string;
