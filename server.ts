@@ -154,6 +154,21 @@ async function startServer() {
     });
   });
 
+  app.post('/api/admin/github-token', (req, res) => {
+    const callerEmail = req.headers['x-admin-email'];
+    if (!isEmailAuthorizedAdmin(callerEmail)) {
+      res.status(403).json({ error: 'Restricted to authorized Pagade administrators.' });
+      return;
+    }
+    const { token }: { token?: string } = req.body || {};
+    if (typeof token === 'string' && token.trim().length > 0) {
+      oauthGithubToken = token.trim();
+      res.json({ connected: true });
+    } else {
+      res.status(400).json({ error: 'Valid GitHub token required.' });
+    }
+  });
+
   // 1. Inspect workspace files & connection status for `pagade` repository (Admin Only)
   app.get('/api/github/status', async (req, res) => {
     const callerEmail = req.headers['x-admin-email'];

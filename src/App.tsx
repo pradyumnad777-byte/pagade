@@ -60,8 +60,9 @@ const STORAGE_KEY = 'pagade_royal_campaign_v2';
 function createInitialTokens(): Token[] {
   const tokens: Token[] = [];
   for (let i = 0; i < 4; i++) {
-    tokens.push({ id: `p-${i}`, owner: 'player', tokenIndex: i, step: -1 });
-    tokens.push({ id: `s-${i}`, owner: 'shakuni', tokenIndex: i, step: -1 });
+    // Deploy Pawn #1 (index 0) onto the starting square (step 0) at match start so players can move on the board right away!
+    tokens.push({ id: `p-${i}`, owner: 'player', tokenIndex: i, step: i === 0 ? 0 : -1 });
+    tokens.push({ id: `s-${i}`, owner: 'shakuni', tokenIndex: i, step: i === 0 ? 0 : -1 });
   }
   return tokens;
 }
@@ -80,7 +81,7 @@ export default function App() {
           gloryPoints: Number(parsed.gloryPoints) || 0,
           selectedDifficulty: parsed.selectedDifficulty || 'auto',
           gameMode: parsed.gameMode === 'quick_blitz' ? 'quick_blitz' : 'classic',
-          autoMoveSingle: parsed.autoMoveSingle !== undefined ? Boolean(parsed.autoMoveSingle) : true,
+          autoMoveSingle: parsed.autoMoveSingle !== undefined ? Boolean(parsed.autoMoveSingle) : false,
           fastSpeed: parsed.fastSpeed !== undefined ? Boolean(parsed.fastSpeed) : false,
           accountProfile: parsed.accountProfile || null,
         };
@@ -95,7 +96,7 @@ export default function App() {
       gloryPoints: 0,
       selectedDifficulty: 'auto',
       gameMode: 'classic',
-      autoMoveSingle: true,
+      autoMoveSingle: false,
       fastSpeed: false,
       accountProfile: null,
     };
@@ -182,6 +183,8 @@ export default function App() {
   const [tokens, setTokens] = useState<Token[]>(() => createInitialTokens());
   const [turn, setTurn] = useState<Owner>('player');
   const [diceValue, setDiceValue] = useState<number | null>(null);
+  const [lastRolledValue, setLastRolledValue] = useState<number | null>(null);
+  const [lastRolledOwner, setLastRolledOwner] = useState<Owner | null>(null);
   const [isRolling, setIsRolling] = useState<boolean>(false);
   const [statusBanner, setStatusBanner] = useState<string>('Cast the ivory dice to begin your turn.');
   const [shakuniLine, setShakuniLine] = useState<string>('Let us see what fate the ivory sticks hold!');
@@ -223,6 +226,9 @@ export default function App() {
   );
   const targetHomeCount = progress.gameMode === 'quick_blitz' ? 2 : 4;
 
+  // Increment turnCounter whenever a turn or bonus turn begins so Shakuni's bot loop always fires cleanly
+  const [turnCounter, setTurnCounter] = useState<number>(0);
+
   // Initialize or Reset a Match for a given Stage Level
   const startMatchAtLevel = useCallback(
     (lvl: number) => {
@@ -234,7 +240,10 @@ export default function App() {
       setSelectedLevel(lvl);
       setTokens(createInitialTokens());
       setTurn('player');
+      setTurnCounter((c) => c + 1);
       setDiceValue(null);
+      setLastRolledValue(null);
+      setLastRolledOwner(null);
       setIsRolling(false);
       setWinner(null);
       setNewlyUnlockedSkill(null);
@@ -367,29 +376,32 @@ export default function App() {
         if (actingOwner === 'player') {
           const reason =
             capturedCount > 0
-              ? 'Captured Shakuni’s token!'
+              ? 'Captured Shakuni’s pawn!'
               : move.reachesHome
-              ? 'Token entered the Royal Mandapa!'
+              ? 'Pawn entered the Royal Mandapa!'
               : 'Rolled a 6!';
           setStatusBanner(`${reason} Bonus roll granted—cast again.`);
         } else {
           const reason =
             capturedCount > 0
-              ? 'Shakuni captured your token!'
+              ? 'Shakuni captured your pawn!'
               : move.reachesHome
-              ? 'Shakuni’s token reached Home!'
+              ? 'Shakuni’s pawn reached Home!'
               : 'Shakuni rolled a 6!';
           setStatusBanner(`${reason} Shakuni casts again...`);
         }
+        setTurnCounter((c) => c + 1);
       } else {
         setConsecutiveSixes(0);
         if (actingOwner === 'player') {
           setTurn('shakuni');
-          setStatusBanner('Shakuni is contemplating his cast...');
+          setTurnCounter((c) => c + 1);
+          setStatusBanner(`You moved Pawn #${move.tokenIndex + 1} (${rolledVal} steps) · Shakuni's turn...`);
         } else {
           setTurn('player');
+          setTurnCounter((c) => c + 1);
           setPlayerShieldRounds((prev) => Math.max(0, prev - 1));
-          setStatusBanner('Your turn · Cast the ivory dice or trigger a Pasa skill.');
+          setStatusBanner(`Shakuni rolled ${rolledVal} and moved Pawn #${move.tokenIndex + 1} · Your turn!`);
         }
       }
     },
@@ -411,7 +423,7 @@ export default function App() {
       setShowExactPicker(false);
       sound.play('roll');
 
-      const animDelay = progress.fastSpeed ? 110 : 210;
+      const animDelay = progress.fastSpeed ? 120 : 220;
 
       window.setTimeout(() => {
         let rolled = forcedExactValue;
@@ -443,12 +455,14 @@ export default function App() {
         setPlayerRollHistory((prev) => [...prev.slice(-19), rolled!]);
         setIsRolling(false);
         setDiceValue(rolled!);
+        setLastRolledValue(rolled!);
+        setLastRolledOwner('player');
 
         const effVal = Math.min(6, rolled! + bonusDiceSteps);
         const moves = getValidMoves(tokens, 'player', effVal, moveMultiplier, false);
 
         if (moves.length === 0) {
-          setStatusBanner(`Rolled ${rolled} · No legal moves available.`);
+          setStatusBanner(`You rolled ${rolled} · No legal move available. Passing turn to Shakuni...`);
           window.setTimeout(
             () => {
               setDiceValue(null);
@@ -456,24 +470,26 @@ export default function App() {
               setMoveMultiplier(1);
               setConsecutiveSixes(0);
               setTurn('shakuni');
-              setStatusBanner('Shakuni is preparing his ivory dice...');
+              setTurnCounter((c) => c + 1);
+              setStatusBanner(`You rolled ${rolled} (no legal move) · Shakuni is casting...`);
             },
-            progress.fastSpeed ? 500 : 850
+            progress.fastSpeed ? 800 : 1200
           );
         } else if (
           progress.autoMoveSingle &&
           (moves.length === 1 || moves.every((m) => m.fromStep === moves[0].fromStep))
         ) {
-          // Store-review favorite QoL: Auto-move when only 1 distinct move exists
-          setStatusBanner(`Rolled ${rolled} · Auto-advancing Token #${moves[0].tokenIndex + 1}...`);
+          setStatusBanner(`You rolled ${rolled} · Auto-advancing Pawn #${moves[0].tokenIndex + 1}...`);
           autoMoveTimerRef.current = window.setTimeout(
             () => {
               executeMove(moves[0], 'player', effVal);
             },
-            progress.fastSpeed ? 260 : 440
+            progress.fastSpeed ? 450 : 750
           );
         } else {
-          setStatusBanner(`Rolled ${rolled} · Select a highlighted token to move.`);
+          setStatusBanner(
+            `You got ${rolled}! Tap your glowing Pawn on the board (or its green button below) to move ${effVal * moveMultiplier} steps.`
+          );
         }
       }, animDelay);
     },
@@ -496,90 +512,114 @@ export default function App() {
     ]
   );
 
-  // Shakuni Automated Bot Turn Loop
+  // Keep latest mutable references for Shakuni's turn timer so state transitions inside the timer never cancel it
+  const latestBotContextRef = useRef({
+    tokens,
+    tier: currentMatchNode.tier,
+    matchLevel,
+    shakuniCappedToThree,
+    consecutiveSixes,
+    playerShieldRounds,
+    fastSpeed: progress.fastSpeed,
+    executeMove,
+  });
+
   useEffect(() => {
-    if (activeTab !== 'match' || turn !== 'shakuni' || winner || isRolling) return;
+    latestBotContextRef.current = {
+      tokens,
+      tier: currentMatchNode.tier,
+      matchLevel,
+      shakuniCappedToThree,
+      consecutiveSixes,
+      playerShieldRounds,
+      fastSpeed: progress.fastSpeed,
+      executeMove,
+    };
+  });
 
-    const thinkDelay = progress.fastSpeed ? 320 : 580;
-    const rollAnimDelay = progress.fastSpeed ? 160 : 280;
+  // Shakuni Automated Bot Turn Loop — depends ONLY on [activeTab, turn, turnCounter, winner]
+  // so calling setIsRolling(true) or setDiceValue(botRoll) inside the timer NEVER cancels the timer!
+  useEffect(() => {
+    if (activeTab !== 'match' || turn !== 'shakuni' || winner) return;
 
-    botTimerRef.current = window.setTimeout(() => {
+    let t1: number | null = null;
+    let t2: number | null = null;
+    let t3: number | null = null;
+
+    const { fastSpeed } = latestBotContextRef.current;
+    const thinkDelay = fastSpeed ? 320 : 550;
+    const rollAnimDelay = fastSpeed ? 180 : 300;
+
+    t1 = window.setTimeout(() => {
       setIsRolling(true);
       sound.play('roll');
 
-      botTimerRef.current = window.setTimeout(() => {
+      t2 = window.setTimeout(() => {
+        const ctx = latestBotContextRef.current;
         const botRoll = rollPagadeDice(
           'shakuni',
-          tokens,
-          currentMatchNode.tier,
-          matchLevel,
-          shakuniCappedToThree,
+          ctx.tokens,
+          ctx.tier,
+          ctx.matchLevel,
+          ctx.shakuniCappedToThree,
           0,
-          consecutiveSixes
+          ctx.consecutiveSixes
         );
-        if (shakuniCappedToThree) {
+        if (ctx.shakuniCappedToThree) {
           setShakuniCappedToThree(false);
         }
 
         setShakuniRollHistory((prev) => [...prev.slice(-19), botRoll]);
         setIsRolling(false);
         setDiceValue(botRoll);
+        setLastRolledValue(botRoll);
+        setLastRolledOwner('shakuni');
 
         const botMoves = getValidMoves(
-          tokens,
+          ctx.tokens,
           'shakuni',
           botRoll,
           1,
-          playerShieldRounds > 0
+          ctx.playerShieldRounds > 0
         );
 
         if (botMoves.length === 0) {
           setStatusBanner(`Shakuni rolled ${botRoll} · No legal moves.`);
-          botTimerRef.current = window.setTimeout(
+          t3 = window.setTimeout(
             () => {
               setDiceValue(null);
               setConsecutiveSixes(0);
               setTurn('player');
+              setTurnCounter((c) => c + 1);
               setPlayerShieldRounds((prev) => Math.max(0, prev - 1));
-              setStatusBanner('Your turn · Cast the ivory dice.');
+              setStatusBanner(`Shakuni rolled ${botRoll} (no move) · Your turn to cast!`);
             },
-            progress.fastSpeed ? 450 : 750
+            ctx.fastSpeed ? 550 : 900
           );
         } else {
           const chosen = chooseShakuniMove(
             botMoves,
-            tokens,
-            currentMatchNode.tier,
-            matchLevel
+            ctx.tokens,
+            ctx.tier,
+            ctx.matchLevel
           );
-          setStatusBanner(`Shakuni rolled ${botRoll} and advances token #${chosen.tokenIndex + 1}.`);
-          botTimerRef.current = window.setTimeout(
+          setStatusBanner(`Shakuni rolled ${botRoll} · Moving Pawn #${chosen.tokenIndex + 1}...`);
+          t3 = window.setTimeout(
             () => {
-              executeMove(chosen, 'shakuni', botRoll);
+              latestBotContextRef.current.executeMove(chosen, 'shakuni', botRoll);
             },
-            progress.fastSpeed ? 340 : 580
+            ctx.fastSpeed ? 420 : 700
           );
         }
       }, rollAnimDelay);
     }, thinkDelay);
 
     return () => {
-      if (botTimerRef.current) window.clearTimeout(botTimerRef.current);
+      if (t1) window.clearTimeout(t1);
+      if (t2) window.clearTimeout(t2);
+      if (t3) window.clearTimeout(t3);
     };
-  }, [
-    activeTab,
-    turn,
-    winner,
-    isRolling,
-    progress.fastSpeed,
-    tokens,
-    currentMatchNode.tier,
-    matchLevel,
-    shakuniCappedToThree,
-    consecutiveSixes,
-    playerShieldRounds,
-    executeMove,
-  ]);
+  }, [activeTab, turn, turnCounter, winner]);
 
   // Activate a Player Tactical Skill during Match
   const handleUseSkill = (skill: PlayerSkill) => {
@@ -917,6 +957,11 @@ export default function App() {
                 lastMovedTokenId={lastMovedTokenId}
                 gameMode={progress.gameMode}
                 isLandscapeCompact={isMobileLandscape}
+                currentDiceCount={
+                  turn === 'player' && effectivePlayerDice !== null
+                    ? effectivePlayerDice * moveMultiplier
+                    : null
+                }
               />
 
               {/* Turn Status Banner & Pity-6 Progress Meter */}
@@ -991,9 +1036,11 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Interactive Carved Ivory Long Dice */}
+                  {/* Interactive Carved Ivory Long Dice + Persistent Roll Count Badge */}
                   <IvoryDice
                     value={diceValue}
+                    lastRolledValue={lastRolledValue}
+                    lastRolledOwner={lastRolledOwner}
                     isRolling={isRolling}
                     onRoll={() => handlePlayerRoll()}
                     disabled={turn !== 'player' || diceValue !== null || isRolling || !!winner}
@@ -1003,7 +1050,7 @@ export default function App() {
                   />
                 </div>
 
-                {/* Store-Review QoL Bar: Mode (Classic 4 vs Quick Blitz 2), Fast Speed, Auto-Move, & Fair Dice Log */}
+                {/* Store-Review QoL Bar: Mode (Classic 4 vs Quick Blitz 2), Manual/Auto Move, Fast Speed, & Fair Dice Log */}
                 <div className="pt-2.5 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-1.5">
                   <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800">
                     <button
@@ -1035,6 +1082,23 @@ export default function App() {
                   </div>
 
                   <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setProgress((prev) => ({
+                          ...prev,
+                          autoMoveSingle: !prev.autoMoveSingle,
+                        }))
+                      }
+                      className={`min-h-[32px] px-2.5 py-1 rounded-lg border text-[11px] font-medium flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0 ${
+                        progress.autoMoveSingle
+                          ? 'bg-sky-500/20 border-sky-500/50 text-sky-300'
+                          : 'bg-slate-900 border-slate-800 text-slate-300'
+                      }`}
+                    >
+                      <span>{progress.autoMoveSingle ? 'Auto-Move: ON' : 'Manual Tap'}</span>
+                    </button>
+
                     <button
                       type="button"
                       onClick={() =>

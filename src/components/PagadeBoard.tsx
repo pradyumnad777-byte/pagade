@@ -1,5 +1,5 @@
 import React from 'react';
-import { Shield, Sparkles, Star, Crown, Lock } from 'lucide-react';
+import { Shield, Sparkles, Star, Crown } from 'lucide-react';
 import {
   MAIN_TRACK_COORDS,
   PLAYER_HOME_COORDS,
@@ -19,6 +19,7 @@ interface PagadeBoardProps {
   lastMovedTokenId: string | null;
   gameMode: GameMode;
   isLandscapeCompact?: boolean;
+  currentDiceCount?: number | null;
 }
 
 export const PagadeBoard: React.FC<PagadeBoardProps> = ({
@@ -30,6 +31,7 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
   lastMovedTokenId,
   gameMode,
   isLandscapeCompact = false,
+  currentDiceCount = null,
 }) => {
   const targetHomeGoalCount = gameMode === 'quick_blitz' ? 2 : 4;
 
@@ -53,14 +55,30 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
     tokensByCell.set(key, list);
   }
 
-  // Map valid moves by tokenIndex and by destination cell
+  // Map valid moves by tokenIndex, by origin cell, and by destination cell
   const validMoveByToken = new Map<number, MoveCandidate>();
+  const validMoveByOrigin = new Map<string, MoveCandidate>();
   const validMoveByDest = new Map<string, MoveCandidate>();
   if (isPlayerTurn) {
     for (const m of validMoves) {
       validMoveByToken.set(m.tokenIndex, m);
-      const dummyToken: Token = { id: 'preview', owner: 'player', tokenIndex: m.tokenIndex, step: m.toStep };
-      const [destR, destC] = getTokenBoardCoord(dummyToken);
+
+      const originToken: Token = {
+        id: 'origin',
+        owner: 'player',
+        tokenIndex: m.tokenIndex,
+        step: m.fromStep,
+      };
+      const [origR, origC] = getTokenBoardCoord(originToken);
+      validMoveByOrigin.set(`${origR},${origC}`, m);
+
+      const destToken: Token = {
+        id: 'preview',
+        owner: 'player',
+        tokenIndex: m.tokenIndex,
+        step: m.toStep,
+      };
+      const [destR, destC] = getTokenBoardCoord(destToken);
       validMoveByDest.set(`${destR},${destC}`, m);
     }
   }
@@ -72,14 +90,20 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
     const cellTokens = tokensByCell.get(`${r},${c}`);
     if (!cellTokens || cellTokens.length === 0) return null;
 
-    // Check if there is a Jodi Pair Blockade (2+ tokens of same owner on a main track square)
+    // Sort so playable player tokens render on top (last in DOM = highest z-order)
+    const sortedTokens = [...cellTokens].sort((a, b) => {
+      const aPlayable = isPlayerTurn && a.owner === 'player' && validMoveByToken.has(a.tokenIndex) ? 1 : 0;
+      const bPlayable = isPlayerTurn && b.owner === 'player' && validMoveByToken.has(b.tokenIndex) ? 1 : 0;
+      return aPlayable - bPlayable;
+    });
+
     const playerCountHere = cellTokens.filter((t) => t.owner === 'player' && t.step >= 0 && t.step <= 50).length;
     const shakuniCountHere = cellTokens.filter((t) => t.owner === 'shakuni' && t.step >= 0 && t.step <= 50).length;
     const hasJodiFortress = playerCountHere >= 2 || shakuniCountHere >= 2;
 
     return (
-      <div className="relative w-full h-full flex items-center justify-center z-20 pointer-events-none">
-        {cellTokens.map((t, idx) => {
+      <div className="relative w-full h-full flex items-center justify-center z-20">
+        {sortedTokens.map((t, idx) => {
           const isPlayable = isPlayerTurn && t.owner === 'player' && validMoveByToken.has(t.tokenIndex);
           const moveCandidate = isPlayable ? validMoveByToken.get(t.tokenIndex)! : null;
           const isLastMoved = t.id === lastMovedTokenId;
@@ -90,26 +114,33 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
             'translate-x-1 translate-y-1',
             '-translate-x-1 translate-y-1',
           ];
-          const offsetClass = cellTokens.length > 1 ? offsetMap[idx % 4] : '';
+          const offsetClass = sortedTokens.length > 1 ? offsetMap[idx % 4] : '';
 
           return (
             <button
               key={t.id}
               type="button"
-              disabled={!isPlayable}
               onClick={(e) => {
                 e.stopPropagation();
-                if (moveCandidate) onSelectMove(moveCandidate);
+                if (moveCandidate) {
+                  onSelectMove(moveCandidate);
+                } else {
+                  // If tapping an opponent token standing on a valid destination square, execute that capture!
+                  const destMoveHere = validMoveByDest.get(`${r},${c}`);
+                  const origMoveHere = validMoveByOrigin.get(`${r},${c}`);
+                  if (destMoveHere) onSelectMove(destMoveHere);
+                  else if (origMoveHere) onSelectMove(origMoveHere);
+                }
               }}
-              aria-label={`${t.owner === 'player' ? 'Your' : 'Shakuni'} token ${t.tokenIndex + 1}`}
-              className={`pointer-events-auto absolute w-[80%] h-[80%] rounded-full flex items-center justify-center transition-transform duration-150 ${offsetClass} ${
+              aria-label={`${t.owner === 'player' ? 'Your' : 'Shakuni'} pawn ${t.tokenIndex + 1}`}
+              className={`absolute w-[88%] h-[88%] rounded-full flex items-center justify-center transition-transform duration-150 ${offsetClass} ${
                 t.owner === 'player'
                   ? 'bg-gradient-to-b from-amber-300 via-amber-500 to-amber-700 border-2 border-amber-100 text-slate-950 shadow-md'
                   : 'bg-gradient-to-b from-rose-400 via-rose-600 to-rose-900 border-2 border-rose-200 text-white shadow-md'
               } ${
                 isPlayable
-                  ? 'ring-2 ring-emerald-400 scale-110 cursor-pointer hover:scale-125 z-30'
-                  : 'cursor-default'
+                  ? 'ring-3 ring-emerald-400 scale-115 cursor-pointer hover:scale-125 z-30 animate-bounce'
+                  : 'cursor-pointer'
               } ${isLastMoved ? 'ring-2 ring-white/90' : ''}`}
             >
               {(t.owner === 'player' && playerShieldActive && t.step >= 0 && t.step <= 50) || hasJodiFortress ? (
@@ -119,7 +150,7 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
                   }`}
                 />
               ) : (
-                <span className="text-[9px] font-bold font-mono-num leading-none select-none">
+                <span className="text-[10px] font-bold font-mono-num leading-none select-none">
                   {t.tokenIndex + 1}
                 </span>
               )}
@@ -135,9 +166,22 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
       className={`relative w-full aspect-square mx-auto rounded-2xl p-2 bg-[#1B1614] border-2 border-amber-500/40 shadow-2xl select-none transition-all ${
         isLandscapeCompact
           ? 'max-w-[min(74vh,430px)]'
-          : 'max-w-[min(92vw,450px)]'
+          : 'max-w-[min(94vw,460px)]'
       }`}
     >
+      {/* Floating Dice Count Pill on Top of Board When Rolled */}
+      {currentDiceCount !== null && (
+        <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 z-40 px-3.5 py-1 rounded-full bg-emerald-500 text-slate-950 font-mono-num font-bold text-xs shadow-lg border border-emerald-200 flex items-center gap-1.5 whitespace-nowrap">
+          <span>Dice Count: {currentDiceCount}</span>
+          <span>·</span>
+          <span>
+            {validMoves.length > 0
+              ? 'Tap Glowing Pawn on Board'
+              : 'Need 6 to Exit Yard'}
+          </span>
+        </div>
+      )}
+
       <div className="w-full h-full grid grid-cols-15 grid-rows-15 bg-[#2A1F1A] rounded-xl overflow-hidden border border-amber-500/30">
         {Array.from({ length: 15 }).map((_, r) =>
           Array.from({ length: 15 }).map((__, c) => {
@@ -162,7 +206,7 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
                       JODI FORTRESS
                     </span>
                     <span className="text-[9px] text-slate-400 mt-0.5 leading-tight">
-                      2 Friendly Tokens Form Safe Pair
+                      2 Friendly Pawns Form Safe Pair
                     </span>
                   </div>
                 </div>
@@ -207,29 +251,17 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
                 >
                   <div className="grid grid-cols-2 gap-2 my-auto p-1.5 bg-black/35 rounded-xl border border-amber-400/30 aspect-square max-h-[78%] mx-auto w-[78%] items-center justify-items-center">
                     {PLAYER_YARD_COORDS.map(([yr, yc], idx) => {
-                      const canExit =
-                        isPlayerTurn &&
-                        validMoves.some(
-                          (m) =>
-                            m.exitsYard &&
-                            getTokenBoardCoord({
-                              id: '',
-                              owner: 'player',
-                              tokenIndex: m.tokenIndex,
-                              step: -1,
-                            })[0] === yr &&
-                            getTokenBoardCoord({
-                              id: '',
-                              owner: 'player',
-                              tokenIndex: m.tokenIndex,
-                              step: -1,
-                            })[1] === yc
-                        );
+                      const yardMove = validMoveByOrigin.get(`${yr},${yc}`);
                       return (
                         <div
                           key={`pyard-${idx}`}
-                          className={`w-full h-full rounded-full bg-amber-950/80 border flex items-center justify-center relative ${
-                            canExit ? 'border-emerald-400 bg-emerald-950/40' : 'border-amber-500/40'
+                          onClick={() => {
+                            if (yardMove) onSelectMove(yardMove);
+                          }}
+                          className={`w-full h-full rounded-full bg-amber-950/80 border flex items-center justify-center relative transition-colors ${
+                            yardMove
+                              ? 'border-2 border-emerald-400 bg-emerald-900/50 cursor-pointer ring-2 ring-emerald-400/40'
+                              : 'border-amber-500/40'
                           }`}
                         >
                           {renderTokensInCell(yr, yc)}
@@ -262,7 +294,7 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
                       {gameMode === 'quick_blitz' ? 'BLITZ 2-HOME' : 'CLASSIC 4-HOME'}
                     </span>
                     <span className="text-[9px] text-slate-400 mt-0.5 leading-tight">
-                      Lead {targetHomeGoalCount} Tokens Home to Win
+                      Lead {targetHomeGoalCount} Pawns Home to Win
                     </span>
                   </div>
                 </div>
@@ -282,7 +314,6 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
                     destMove ? 'ring-2 ring-emerald-400 cursor-pointer' : ''
                   }`}
                 >
-                  {/* Shakuni Home Slot Top */}
                   <div className="w-full flex items-center justify-center gap-0.5 h-3.5">
                     {Array.from({ length: shakuniHomeCount }).map((_, i) => (
                       <span
@@ -292,7 +323,6 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
                     ))}
                   </div>
 
-                  {/* Center Crown Emblem */}
                   <div className="flex flex-col items-center justify-center">
                     <Crown className="w-3.5 h-3.5 text-amber-400" />
                     <span className="font-display text-[8px] tracking-widest text-amber-200 font-bold">
@@ -300,7 +330,6 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
                     </span>
                   </div>
 
-                  {/* Player Home Slot Bottom */}
                   <div className="w-full flex items-center justify-center gap-0.5 h-3.5">
                     {Array.from({ length: playerHomeCount }).map((_, i) => (
                       <span
@@ -328,6 +357,7 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
             const isShakuniStart = r === 1 && c === 8;
             const isPlayerHomeStretch = playerHomeSet.has(coordKey);
             const isShakuniHomeStretch = shakuniHomeSet.has(coordKey);
+            const originCandidate = validMoveByOrigin.get(coordKey);
             const destCandidate = validMoveByDest.get(coordKey);
 
             let cellBg = 'bg-[#F5EFE6] text-slate-800';
@@ -347,11 +377,18 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
               <div
                 key={coordKey}
                 onClick={() => {
-                  if (destCandidate) onSelectMove(destCandidate);
+                  // Clicking either the square where your playable pawn stands OR its target square moves the pawn!
+                  if (originCandidate) {
+                    onSelectMove(originCandidate);
+                  } else if (destCandidate) {
+                    onSelectMove(destCandidate);
+                  }
                 }}
                 className={`relative border-[0.5px] border-amber-900/30 flex items-center justify-center transition-colors ${cellBg} ${
-                  destCandidate
-                    ? 'ring-2 ring-inset ring-emerald-400 bg-emerald-400/30 cursor-pointer'
+                  originCandidate
+                    ? 'ring-2 ring-inset ring-emerald-400 bg-emerald-400/25 cursor-pointer'
+                    : destCandidate
+                    ? 'ring-2 ring-inset ring-emerald-400 bg-emerald-400/35 cursor-pointer'
                     : ''
                 }`}
               >
@@ -368,7 +405,7 @@ export const PagadeBoard: React.FC<PagadeBoardProps> = ({
                 )}
 
                 {destCandidate && (
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-sm pointer-events-none z-10" />
+                  <span className="w-3 h-3 rounded-full bg-emerald-400 border border-slate-950 animate-ping pointer-events-none z-10" />
                 )}
 
                 {renderTokensInCell(r, c)}
